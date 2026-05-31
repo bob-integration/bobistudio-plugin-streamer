@@ -1,6 +1,29 @@
 from app.scripts import normalize_worker_udp_params
 
 
+def source_shm(params, context):
+    """Colonnes lisibles source/shm_out pour le dashboard."""
+    source = params.get("shm_name") or "—"
+    au = params.get("audio") or {}
+    if au.get("enabled") and params.get("audio_shm"):
+        ntr = len(au.get("tracks") or [])
+        source += f" + {params['audio_shm']} ({ntr} piste{'s' if ntr > 1 else ''})"
+    return {"source": source, "shm": _fmt_dests(params.get("destinations"))}
+
+
+def _fmt_dests(dests):
+    parts = []
+    for d in dests or []:
+        t = d.get("type")
+        if t == "udp":
+            parts.append(f"udp {d.get('host')}:{d.get('port')}")
+        elif t == "srt":
+            parts.append(f"srt {d.get('host')}:{d.get('port')}")
+        elif t == "webrtc":
+            parts.append(f"webrtc:{d.get('path')}" + ("" if d.get("enabled") else " (off)"))
+    return " · ".join(parts) or "—"
+
+
 def before_deploy(params, context):
     """Normalise le schéma multi-destinations et résout les URLs WebRTC."""
     hot = bool(params.get("hot_input", False))
