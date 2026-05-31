@@ -1,6 +1,12 @@
 from app.scripts import normalize_worker_udp_params
 
 
+def ember_clear_slot(slot_type, slot_idx, params, context):
+    """Efface le câblage Ember+ (shm_name → vide)."""
+    params["shm_name"] = ""
+    return {"params": params, "body": {"shm": ""}}
+
+
 def ember_targets(params, context):
     """Entrée vidéo consommée — cible du routing Ember+."""
     hn = context.get("hostname", "")
