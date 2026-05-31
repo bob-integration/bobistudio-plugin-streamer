@@ -1,0 +1,44 @@
+/* Éditeur streamer — repris de l'ancienne page streams.html (scopé .st-body). */
+.st-body .sect { padding:12px 0 2px; margin-bottom:4px; border-top:1px solid var(--border-soft); }
+.st-body .sect-title { font-size:0.78em; color:var(--text-muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.05em; }
+.st-body .fld-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px 10px; }
+.st-body .fld { display:flex; flex-direction:column; gap:3px; margin:0; font-size:1em; }
+.st-body .fld > span { font-size:0.78em; color:var(--text-muted); margin:0; }
+.st-body .fld input, .st-body .fld select {
+    background:var(--bg-input); color:var(--text); border:1px solid var(--border-soft);
+    border-radius:4px; padding:3px 6px; font-size:0.88em; width:100%;
+}
+.st-body .fld input[type=checkbox] { width:auto; }
+.st-body .dest-row { display:grid; grid-template-columns:96px 1fr auto; gap:8px; align-items:start;
+    padding:8px; border-radius:5px; background:var(--bg-input); margin-bottom:6px; border:1px solid var(--border-soft); }
+.st-body .dest-row .dest-fields { display:flex; flex-wrap:wrap; gap:6px 10px; }
+.st-body .dest-row .dest-fields .fld { min-width:90px; flex:1; }
+/* Toggle on/off : switch iOS-like (miroir de .palette-field-check de base.css). */
+.st-body .switch { display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-size:0.85em; color:var(--text); }
+.st-body .switch input[type=checkbox] {
+    appearance:none; -webkit-appearance:none; position:relative; width:36px; height:20px;
+    border-radius:999px; background:var(--bg-input); border:1px solid var(--border);
+    cursor:pointer; flex:0 0 auto; margin:0; transition:background .18s ease-out, border-color .18s ease-out;
+}
+.st-body .switch input[type=checkbox]::before {
+    content:''; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%;
+    background:var(--text-muted); transition:transform .22s cubic-bezier(.22,1,.36,1), background .18s ease-out;
+}
+.st-body .switch input[type=checkbox]:checked { background:var(--accent-soft); border-color:var(--accent); }
+.st-body .switch input[type=checkbox]:checked::before { background:var(--accent); transform:translateX(16px); }
+.st-body .switch input[type=checkbox]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (prefers-reduced-motion: reduce) { .st-body .switch input[type=checkbox]::before { transition:none; } }
+.st-body .webrtc-preview { margin-top:8px; }
+.st-body .webrtc-preview iframe { width:100%; height:280px; border:1px solid var(--border-soft); border-radius:6px; background:#000; }
+.st-body .preview-note { font-size:0.82em; color:var(--text-muted); padding:8px; border:1px dashed var(--border-soft); border-radius:6px; }
+/* Toggle preview — même design que « Mode avancé » du correcteur de couleur. */
+.st-body .st-prev-toggle-row { display:flex; align-items:center; gap:14px; margin:14px 0 8px; }
+.st-body .st-prev-toggle-row::before, .st-body .st-prev-toggle-row::after { content:""; flex:1; height:1px; background:var(--border-soft); }
+.st-body .st-prev-toggle {
+    padding:6px 14px; background:var(--bg-input); border:1px solid var(--border);
+    border-radius:999px; color:var(--text-muted); font:inherit; font-size:0.82em;
+    font-weight:600; letter-spacing:0.3px; cursor:pointer;
+    transition:color 120ms ease-out, border-color 120ms ease-out, background 120ms ease-out;
+}
+.st-body .st-prev-toggle:hover { color:var(--text); border-color:var(--accent); }
+.st-body .st-prev-toggle.is-open { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }

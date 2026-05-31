@@ -1,0 +1,26 @@
+{
+  "type": "streamer",
+  "label": "Streamer",
+  "version": "0.4.0",
+  "description": "Encodeur/streamer : encode une entrée vidéo (+ audio 8ch) et diffuse vers plusieurs destinations UDP/SRT/WebRTC (un seul encode, fan-out). Édité sur la page I/O (onglet Streams).",
+  "nav": { "section": "streams", "label": "Streams", "route": "/io", "order": 10 },
+  "script_template": "script.py",
+  "ui": { "control_html": "control.html", "control_js": "control.js", "control_css": "control.css" },
+  "deploy_defaults": {
+    "shm_name": "mxl_mix", "audio_shm": null, "hot_input": false,
+    "video": { "codec": "h264", "bitrate": "4M", "preset": "ultrafast", "gop": 25,
+               "width": 0, "height": 0, "fps": 25 },
+    "audio": { "enabled": false, "codec": "aac", "bitrate": "128k", "tracks": [] },
+    "destinations": []
+  },
+  "wiring": {
+    "produces": [],
+    "consumes": [
+      { "essence": "video", "state_field": "shm_name",  "label": "Vidéo" },
+      { "essence": "audio", "state_field": "audio_shm", "label": "Audio" }
+    ],
+    "mode": "hot-wire",
+    "state_endpoint": "/state"
+  },
+  "control": { "endpoints": ["/input", "/audiomap"] }
+}

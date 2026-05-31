@@ -1,0 +1,10 @@
+{
+  "published_at": "2026-05-30",
+  "changes": [],
+  "fixes": [
+    "Audio activé mais source muette/absente : la vidéo ne s'arrête plus. Le feeder audio écrit désormais du silence aussi quand le shm audio est PRÉSENT mais sans nouvelle donnée (auparavant le silence n'était écrit que si le shm était totalement absent → ffmpeg starvait sur l'entrée audio et bloquait la vidéo)."
+  ],
+  "known_bugs": [
+    "Lip-sync : décalage A/V connu introduit en aval (cf. mire avsync) — non corrigé par ce plugin."
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "published_at": "2026-05-30",
+  "changes": [
+    "UI de contrôle déplacée dans le plugin (control.html/js/css) : l'éditeur d'encodeur est désormais versionné avec le plugin.",
+    "Pilotage depuis la page I/O unifiée (onglet Streams) au lieu d'une page bespoke.",
+    "Éditeur par instance : codec / preset / GOP / chroma, colorimétrie, format de sortie, pistes audio (mapping 8 canaux), destinations UDP / SRT / WebRTC, preview WHEP embarquée, liens clients."
+  ],
+  "fixes": [
+    "Polling par instance via GET /api/streams/<vmid> (plus de refetch global de tous les encodeurs à chaque rafraîchissement)."
+  ],
+  "known_bugs": [
+    "Lip-sync : décalage A/V connu introduit en aval (cf. mire avsync) — non corrigé par ce plugin."
+  ]
+}
