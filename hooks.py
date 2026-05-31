@@ -1,6 +1,13 @@
 from app.scripts import normalize_worker_udp_params
 
 
+def ember_targets(params, context):
+    """Entrée vidéo consommée — cible du routing Ember+."""
+    hn = context.get("hostname", "")
+    return [{"label": hn, "slot_type": "streamer",
+             "slot_idx": 0, "shm": params.get("shm_name", "")}]
+
+
 def source_shm(params, context):
     """Colonnes lisibles source/shm_out pour le dashboard."""
     source = params.get("shm_name") or "—"
