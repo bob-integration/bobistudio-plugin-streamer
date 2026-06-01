@@ -53,8 +53,10 @@ window.MXLPlugins.streamer = (function () {
         if(t=='srt') return txt('host','Hôte',d.host,'192.0.2.30')+num('port','Port',d.port==null?9001:d.port)
             +num('latency_ms','Latence ms',d.latency_ms==null?120:d.latency_ms)
             +txt('passphrase','Passphrase',d.passphrase)+txt('streamid','Stream ID',d.streamid);
+        // Actif par défaut pour une nouvelle destination (enabled undefined) ; on
+        // ne décoche que si enabled vaut explicitement false (destination existante).
         if(t=='webrtc') return txt('path','Chemin (path)',d.path,'stream-221')
-            +`<label class="switch" style="align-self:flex-end;padding-bottom:6px"><input type="checkbox" data-f="enabled" ${d.enabled?'checked':''}><span>Diffuser</span></label>`;
+            +`<label class="switch" style="align-self:flex-end;padding-bottom:6px"><input type="checkbox" data-f="enabled" ${d.enabled!==false?'checked':''}><span>Diffuser</span></label>`;
         return '';
     }
     function _autoWebrtcPath(){
