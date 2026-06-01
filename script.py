@@ -9,12 +9,18 @@ CONFIG         = {config}
 HOSTNAME       = "{hostname}"
 PLUGIN_VERSION = "{plugin_version}"
 
+def _as_bool(v):
+    # bool("False") == True : on parse explicitement les chaînes de CONFIG.
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
 SHM_NAME     = CONFIG.get("shm_name")
 AUDIO_SHM    = CONFIG.get("audio_shm")
 VIDEO_CFG    = CONFIG.get("video") or {{}}
 AUDIO_CFG    = CONFIG.get("audio") or {{}}
 DESTINATIONS = CONFIG.get("destinations") or []
-HOT_INPUT    = bool(CONFIG.get("hot_input"))   # mode moniteur : source re-câblable à chaud (dims FIXES)
+HOT_INPUT    = _as_bool(CONFIG.get("hot_input"))   # mode moniteur : source re-câblable à chaud (dims FIXES)
 
 SHM_PATH = f"/dev/shm/{{SHM_NAME}}"
 # ── Sémantique format : le format CONFIGURÉ est la SORTIE souhaitée — TOUJOURS honorée,
