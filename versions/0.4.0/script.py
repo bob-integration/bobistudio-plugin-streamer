@@ -33,7 +33,7 @@ WIDTH  = int(VIDEO_CFG.get("width") or 0)
 HEIGHT = int(VIDEO_CFG.get("height") or 0)
 FPS    = EFF_FPS
 HEADER_SIZE = 64
-RING_SIZE   = CONFIG.get("shm_video_ring", 10)
+RING_SIZE   = 10
 # ── Chroma : IN = layout du shm source (doit matcher le producteur) ; OUT = encode souhaité.
 _CHROMA_DIV = {{"420": (2, 2), "422": (2, 1), "444": (1, 1)}}
 _PIX_FMT    = {{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}
@@ -78,7 +78,7 @@ A_CHANNELS    = 8
 A_BYTES_PER_SAMPLE = 3
 A_CHUNK_SIZE  = (A_SAMPLE_RATE // 1000) * A_CHANNELS * A_BYTES_PER_SAMPLE  # 1152 (1 ms)
 A_HEADER_SIZE = 64
-A_RING_SIZE   = CONFIG.get("shm_audio_ring", 100)
+A_RING_SIZE   = 100
 A_TOTAL_SIZE  = A_HEADER_SIZE + A_RING_SIZE * A_CHUNK_SIZE
 AUDIO_FIFO    = "/tmp/wudp_audio.raw"
 AUDIO_ENABLED = bool(AUDIO_CFG.get("enabled")) and bool(AUDIO_SHM)

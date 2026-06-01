@@ -5,7 +5,7 @@
 // GET /api/streams/<vmid> ; sauvegarde POST /api/streams/<vmid> ; polling 5 s.
 window.MXLPlugins = window.MXLPlugins || {};
 window.MXLPlugins.streamer = (function () {
-    let EL = null, VMID = null, TOAST = () => {}, pollTimer = null, firstRender = true, lastC = null;
+    let EL = null, VMID = null, TOAST = () => {}, pollTimer = null, firstRender = true, lastC = null, _hostname = '';
 
     const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
         '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -57,7 +57,21 @@ window.MXLPlugins.streamer = (function () {
             +`<label class="switch" style="align-self:flex-end;padding-bottom:6px"><input type="checkbox" data-f="enabled" ${d.enabled?'checked':''}><span>Diffuser</span></label>`;
         return '';
     }
-    function onDestType(sel){ sel.closest('[data-dest]').querySelector('.dest-fields').innerHTML = destFields({type:sel.value}); }
+    function _autoWebrtcPath(){
+        const base = (_hostname || 'stream').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'stream';
+        const used = new Set([...EL.querySelectorAll('.dest-fields [data-f="path"]')].map(i => i.value.trim()).filter(Boolean));
+        if (!used.has(base)) return base;
+        for (let i = 2; i < 20; i++) { const c = `${base}-${i}`; if (!used.has(c)) return c; }
+        return base;
+    }
+    function onDestType(sel){
+        const destDiv = sel.closest('[data-dest]');
+        destDiv.querySelector('.dest-fields').innerHTML = destFields({type: sel.value});
+        if (sel.value === 'webrtc') {
+            const pathInput = destDiv.querySelector('[data-f="path"]');
+            if (pathInput && !pathInput.value.trim()) pathInput.value = _autoWebrtcPath();
+        }
+    }
     function readDest(row){
         const t = row.querySelector('[data-f=type]').value;
         const get = f => { const el = row.querySelector(`.dest-fields [data-f="${f}"]`); if(!el) return undefined;
@@ -300,7 +314,7 @@ window.MXLPlugins.streamer = (function () {
     }
 
     // ─── Rendu carte + live update ───
-    function renderInner(c){
+    function renderInner(c){ _hostname = c.hostname || '';
         const p=c.params, v=p.video||{}, a=p.audio||{};
         const fps=(c.live&&c.live.fps!=null)?Number(c.live.fps).toFixed(1):'—';
         const fpsCol=(c.live&&c.live.fps>=24)?'var(--status-running-fg)':(c.live&&c.live.fps>0)?'var(--status-warning-fg)':'var(--status-stopped-fg)';

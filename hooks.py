@@ -1,6 +1,51 @@
 from app.scripts import normalize_worker_udp_params
 
 
+def topology_ports(hostname, params, ctx):
+    shm_v = params.get("shm_name") or ""
+    shm_a = params.get("audio_shm") or ""
+    consumes = [{"shm": shm_v, "kind": "video"} if shm_v
+                else {"shm": "", "kind": "video", "disconnected": True}]
+    if shm_a:
+        consumes.append({"shm": shm_a, "kind": "audio"})
+    else:
+        consumes.append({"shm": "", "kind": "audio", "disconnected": True})
+    return {"produces": [], "consumes": consumes}
+
+
+def consumed_shms(params, ctx):
+    return [s for s in [params.get("shm_name"), params.get("audio_shm")] if s]
+
+
+def wire_input(essence, shm, slot, params, ctx):
+    params = dict(params)
+    audio_shm = ctx.get("audio_shm")  # combo-cable video+audio en un seul appel
+    if essence == "audio":
+        params["audio_shm"] = shm
+        audio = dict(params.get("audio") or {})
+        audio["enabled"] = True
+        params["audio"] = audio
+    else:
+        params["shm_name"] = shm
+        if audio_shm:
+            params["audio_shm"] = audio_shm
+            audio = dict(params.get("audio") or {})
+            audio["enabled"] = True
+            params["audio"] = audio
+    # hot-wire résolution uniquement pour vidéo seule (pas de changement audio concurrent)
+    skip_hot = (essence == "audio" or bool(audio_shm))
+    return {"params": params, "hot_idx": None, "skip_hot": skip_hot}
+
+
+def unwire_input(essence, shm, slot, params, ctx):
+    params = dict(params)
+    if essence == "video":
+        params["shm_name"] = ""
+    else:
+        params["audio_shm"] = ""
+    return {"params": params, "hot_idx": None}
+
+
 def ember_clear_slot(slot_type, slot_idx, params, context):
     """Efface le câblage Ember+ (shm_name → vide)."""
     params["shm_name"] = ""
