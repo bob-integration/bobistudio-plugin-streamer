@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 BOBI SAS, France
+// Auteur : Cyril Mazouer, pour le compte de BOBI SAS
+// Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
+
 // Éditeur d'encodeur streamer — monté par le shell I/O via
 // window.MXLPlugins.streamer.mount(el, vmid, ctx). Une instance montée à la fois.
 // Porté à l'identique de l'ancienne page streams.html (encodage, pistes audio,

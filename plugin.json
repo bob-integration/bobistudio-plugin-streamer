@@ -1,4 +1,5 @@
 {
+  "license": "GPL-3.0-or-later",
   "type": "streamer",
   "label": "Streamer",
   "badge": {
@@ -6,7 +7,7 @@
     "class": "mode-stream"
   },
   "deploy_order": 2,
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Encodeur/streamer : encode une entrée vidéo (+ audio 8ch) et diffuse vers plusieurs destinations UDP/SRT/WebRTC (un seul encode, fan-out). Édité sur la page I/O (onglet Streams).",
   "nav": {
     "section": "streams",
