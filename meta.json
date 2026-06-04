@@ -1,8 +1,11 @@
 {
-  "version": "0.4.5",
+  "version": "0.5.0",
   "date": "2026-06-04",
   "changes": {
     "Nouveautés": [
+      "Entrelacé (1080i50) — DÉSENTRELACEMENT pour l'affichage. Le streamer lit le mode de balayage du shm d'entrée (CONFIG.scan/field_order, porté hors-bande par le format du producteur) et, si la source est entrelacée, insère un filtre bwdif (mode=send_frame, parity tff=0/bff=1) AVANT le scale. send_frame = 1 trame de sortie par trame d'entrée → conserve la cadence trame (25 fps pour 1080i50), pas de doublement de débit. Source progressive (défaut scan=p) → comportement strictement inchangé. Utilisé notamment par l'encodeur de monitoring pour prévisualiser une source 1080i50 sans peigne."
+    ],
+    "Nouveautés (0.4.5)": [
       "Pipeline audio MXL en BIG-ENDIAN wire-native (s24be) : le shm audio porte désormais les octets du fil 2110-30 (plus de conversion). Migration ATOMIQUE de toute la chaîne audio (receiver_2110/sender_2110/streamer/recorder/player + VU multiview + sinus avsync) — à redéployer TOUS ENSEMBLE (un conteneur resté en s24le = audio cassé). Codecs FICHIER (recorder pcm_s24le) inchangés ; sortie 2110-30 sender = passthrough BE."
     ],
     "Nouveautés (0.4.4)": [

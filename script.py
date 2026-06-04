@@ -54,6 +54,14 @@ OUT_CHROMA  = str(VIDEO_CFG.get("chroma") or "422")
 OUT_CHROMA  = OUT_CHROMA if OUT_CHROMA in _CHROMA_DIV else "422"
 # Profondeur du shm d'ENTRÉE (8/10/12 bits). La SORTIE (encode h264/h265) reste 8 bits.
 BIT_DEPTH   = int(CONFIG.get("bit_depth") or 8)
+# Mode de balayage du shm d'ENTRÉE (porté hors-bande par le format du producteur). Une source
+# entrelacée est DÉSENTRELACÉE pour l'affichage (preview/encode progressif) : sans ça, peigne
+# sur les mouvements horizontaux. send_frame = 1 trame de sortie/trame d'entrée → conserve la
+# cadence trame (25 fps pour 1080i50), JAMAIS la cadence champ (50) qui doublerait le débit.
+IN_SCAN          = str(CONFIG.get("scan") or "p").strip().lower()
+IN_FIELD_ORDER   = str(CONFIG.get("field_order") or "").strip().lower()
+_DEINT_VF = ("bwdif=mode=send_frame:parity=" + ("1" if IN_FIELD_ORDER == "bff" else "0")) \
+            if IN_SCAN == "i" else ""
 _IN_DEEP    = BIT_DEPTH >= 10
 _IN_DBPS    = 2 if _IN_DEEP else 1                                 # octets/échantillon entrée
 _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
@@ -362,6 +370,8 @@ def _video_filter():
     moniteur cadence déjà à la sortie) ET si la sortie diffère de l'entrée. Chaîne vide si
     sortie == entrée → aucun coût ni recompression inutile."""
     parts = []
+    if _DEINT_VF:
+        parts.append(_DEINT_VF)          # désentrelacement AVANT scale (sinon peigne ré-échantillonné)
     if OUT_WIDTH and OUT_HEIGHT and (OUT_WIDTH != WIDTH or OUT_HEIGHT != HEIGHT):
         parts.append(f"scale={{OUT_WIDTH}}:{{OUT_HEIGHT}}:flags=bicubic")
     if (not HOT_INPUT) and OUT_FPS and OUT_FPS != IN_FPS:
