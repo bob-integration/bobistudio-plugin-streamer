@@ -395,7 +395,7 @@ def creer_ffmpeg():
 
     if AUDIO_ENABLED:
         cmd += ["-thread_queue_size", "512",
-                "-f", "s24le", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS),
+                "-f", "s24be", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS),
                 "-i", AUDIO_FIFO]
         filters, amaps, acodecs, ts_sel, webrtc_sel = _audio_plan()
         # Filtre vidéo dans le même filter_complex que l'audio → on mappe [vout].
