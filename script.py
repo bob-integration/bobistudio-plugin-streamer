@@ -397,8 +397,9 @@ def _av_itsoffset():
     media-clock fenêtré, non TAI absolu → grands nombres d'échelles différentes) → 0 = repli sur la
     cadence nominale, ZÉRO régression. delta>0 : l'audio le plus récent est postérieur à la vidéo la
     plus récente → retarder l'audio. À valider au banc (clap/flash) ; le signe est observable via le log."""
-    if not (AUDIO_ENABLED and HOT_INPUT):
-        return 0.0   # correction réservée au monitor (HOT_INPUT) ; destinations = passthrough par index
+    if not AUDIO_ENABLED:
+        return 0.0   # pas d'audio → rien à aligner. (NB : un monitor AVEC audio est hot_input=False
+                     # côté monitor.py — ne PAS gater sur HOT_INPUT, sinon le monitor audio est exclu.)
     tv = _read_media_ts(SHM_PATH)
     ta = _read_media_ts("/dev/shm/" + str(AUDIO_SHM))
     off = 0.0
