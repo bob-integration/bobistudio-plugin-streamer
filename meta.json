@@ -1,8 +1,9 @@
 {
-  "version": "0.5.0",
-  "date": "2026-06-04",
+  "version": "0.6.0",
+  "date": "2026-06-05",
   "changes": {
     "Nouveautés": [
+      "Sync A/V par TIMESTAMP MÉDIA (monitor). Le streamer lit le media_ts (off16 du header shm, TAI/PTP ns écrit par mtl_rx) pour la vidéo ET l'audio, et en mode monitor applique une correction d'offset initial via ffmpeg -itsoffset dérivée de Δ(audio_ts − video_ts) — l'horloge média est commune A/V (ST 2110-10) donc l'alignement est sur la capture, pas sur un hasard de phase. AUTO-VALIDÉE : appliquée seulement si les deux media_ts sont présents ET cohérents (|Δ| < 0,5 s) ; media_ts absent/0 (producteur legacy, simu) ou format media-clock fenêtré (Δ aberrant) → repli sur la cadence nominale, ZÉRO régression. Δ et offset retenu loggés (`av-sync: …`). À valider au banc (clap/flash) ; le signe est observable dans le log. Propagation du media_ts à travers les étages de calcul (mixer/dve/…) = différée.",
       "Entrelacé (1080i50) — DÉSENTRELACEMENT pour l'affichage. Le streamer lit le mode de balayage du shm d'entrée (CONFIG.scan/field_order, porté hors-bande par le format du producteur) et, si la source est entrelacée, insère un filtre bwdif (mode=send_frame, parity tff=0/bff=1) AVANT le scale. send_frame = 1 trame de sortie par trame d'entrée → conserve la cadence trame (25 fps pour 1080i50), pas de doublement de débit. Source progressive (défaut scan=p) → comportement strictement inchangé. Utilisé notamment par l'encodeur de monitoring pour prévisualiser une source 1080i50 sans peigne."
     ],
     "Nouveautés (0.4.5)": [

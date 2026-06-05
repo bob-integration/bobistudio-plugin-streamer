@@ -378,10 +378,42 @@ def _video_filter():
         parts.append(f"fps={{OUT_FPS}}")
     return ",".join(parts)
 
+def _read_media_ts(path):
+    """Timestamp MÉDIA (capture) du dernier état d'un shm : off16 du header = TAI ns (0 = inconnu).
+    Écrit par les producteurs media-aware (mtl_rx) ; 0 si producteur legacy / simu."""
+    try:
+        with open(path, "rb") as f:
+            hdr = f.read(24)
+        if len(hdr) < 24:
+            return 0
+        return struct.unpack("Q", hdr[16:24])[0]
+    except Exception:
+        return 0
+
+def _av_itsoffset():
+    """Correction d'offset A/V initial via les timestamps média (PTP, communs A/V). AUTO-VALIDÉE :
+    n'applique un offset que si video_ts ET audio_ts sont présents ET mutuellement cohérents
+    (|Δ| < 0.5 s). Un media_ts absent (0, producteur legacy/simu) OU un écart aberrant (format
+    media-clock fenêtré, non TAI absolu → grands nombres d'échelles différentes) → 0 = repli sur la
+    cadence nominale, ZÉRO régression. delta>0 : l'audio le plus récent est postérieur à la vidéo la
+    plus récente → retarder l'audio. À valider au banc (clap/flash) ; le signe est observable via le log."""
+    if not (AUDIO_ENABLED and HOT_INPUT):
+        return 0.0   # correction réservée au monitor (HOT_INPUT) ; destinations = passthrough par index
+    tv = _read_media_ts(SHM_PATH)
+    ta = _read_media_ts("/dev/shm/" + str(AUDIO_SHM))
+    off = 0.0
+    if tv and ta:
+        delta = (int(ta) - int(tv)) / 1e9
+        if abs(delta) < 0.5:
+            off = delta
+    print("av-sync: video_ts=%d audio_ts=%d itsoffset_audio=%.4fs" % (tv, ta, off), flush=True)
+    return off
+
 def creer_ffmpeg():
     # -r d'entrée = cadence du signal reçu : EFF_FPS en mode moniteur (le feeder cadence
     # lui-même à cette valeur), sinon la cadence native du pipeline (IN_FPS).
     in_rate = EFF_FPS if HOT_INPUT else IN_FPS
+    av_off = _av_itsoffset()   # offset A/V initial (s) dérivé des timestamps média PTP ; 0 = repli
     cmd = ["ffmpeg",
            "-f", "rawvideo", "-pix_fmt", IN_PIX_FMT,   # layout du shm d'entrée
            "-s", f"{{WIDTH}}x{{HEIGHT}}", "-r", str(in_rate), "-i", "pipe:0"]
@@ -405,8 +437,10 @@ def creer_ffmpeg():
 
     if AUDIO_ENABLED:
         cmd += ["-thread_queue_size", "512",
-                "-f", "s24be", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS),
-                "-i", AUDIO_FIFO]
+                "-f", "s24be", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS)]
+        if av_off:                                  # -itsoffset s'applique à l'INPUT qui suit (audio)
+            cmd += ["-itsoffset", "%.6f" % av_off]
+        cmd += ["-i", AUDIO_FIFO]
         filters, amaps, acodecs, ts_sel, webrtc_sel = _audio_plan()
         # Filtre vidéo dans le même filter_complex que l'audio → on mappe [vout].
         if vchain:
