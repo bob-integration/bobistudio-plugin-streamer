@@ -404,7 +404,10 @@ def _av_itsoffset():
     ta = _read_media_ts("/dev/shm/" + str(AUDIO_SHM))
     off = 0.0
     if tv and ta:
-        delta = (int(ta) - int(tv)) / 1e9
+        # Signe INVERSÉ (essai banc) : delta<0 → -itsoffset avance l'audio. Le retard perçu vient
+        # surtout de la latence d'encodage audio (FIFO + aresample) que le media_ts ne voit pas →
+        # avancer l'audio plutôt que le retarder. Magnitude = Δ media_ts (~capture skew).
+        delta = (int(tv) - int(ta)) / 1e9
         if abs(delta) < 0.5:
             off = delta
     print("av-sync: video_ts=%d audio_ts=%d itsoffset_audio=%.4fs" % (tv, ta, off), flush=True)
