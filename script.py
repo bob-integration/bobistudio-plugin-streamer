@@ -107,6 +107,14 @@ A_TOTAL_SIZE  = A_HEADER_SIZE + A_RING_SIZE * A_CHUNK_SIZE
 AUDIO_FIFO    = "/tmp/wudp_audio.raw"
 AUDIO_ENABLED = bool(AUDIO_CFG.get("enabled")) and bool(AUDIO_SHM)
 
+# Phase-lock A/V déterministe : le feeder vidéo publie ici le media_ts (TAI ns, instant de CAPTURE,
+# off16 du header) de la frame qu'il VIENT d'émettre ; le feeder audio n'émet que les chunks dont le
+# media_ts rattrape ce playhead → audio et vidéo co-émis = même instant de capture → ffmpeg muxe
+# aligné (PTS préservés), quelles que soient les latences. 0 = pas encore de frame vidéo média-datée
+# (producteur legacy/simu) → repli sur le débit normal, zéro régression. 1 chunk audio = 1 ms.
+_sync_v_mts = [0]
+A_CHUNK_NS  = 1000000
+
 # ─── Mapping canaux→pistes mutable À CHAUD (page Streams) ─────────────
 # La FORME est figée au lancement : nombre de pistes + largeur (mono=1 / stéréo=2).
 # Seuls les INDICES de canaux source (0..7) changent à chaud (POST :8082/audiomap).
@@ -378,46 +386,10 @@ def _video_filter():
         parts.append(f"fps={{OUT_FPS}}")
     return ",".join(parts)
 
-def _read_media_ts(path):
-    """Timestamp MÉDIA (capture) du dernier état d'un shm : off16 du header = TAI ns (0 = inconnu).
-    Écrit par les producteurs media-aware (mtl_rx) ; 0 si producteur legacy / simu."""
-    try:
-        with open(path, "rb") as f:
-            hdr = f.read(24)
-        if len(hdr) < 24:
-            return 0
-        return struct.unpack("Q", hdr[16:24])[0]
-    except Exception:
-        return 0
-
-def _av_itsoffset():
-    """Correction d'offset A/V initial via les timestamps média (PTP, communs A/V). AUTO-VALIDÉE :
-    n'applique un offset que si video_ts ET audio_ts sont présents ET mutuellement cohérents
-    (|Δ| < 0.5 s). Un media_ts absent (0, producteur legacy/simu) OU un écart aberrant (format
-    media-clock fenêtré, non TAI absolu → grands nombres d'échelles différentes) → 0 = repli sur la
-    cadence nominale, ZÉRO régression. delta>0 : l'audio le plus récent est postérieur à la vidéo la
-    plus récente → retarder l'audio. À valider au banc (clap/flash) ; le signe est observable via le log."""
-    if not AUDIO_ENABLED:
-        return 0.0   # pas d'audio → rien à aligner. (NB : un monitor AVEC audio est hot_input=False
-                     # côté monitor.py — ne PAS gater sur HOT_INPUT, sinon le monitor audio est exclu.)
-    tv = _read_media_ts(SHM_PATH)
-    ta = _read_media_ts("/dev/shm/" + str(AUDIO_SHM))
-    off = 0.0
-    if tv and ta:
-        # Signe INVERSÉ (essai banc) : delta<0 → -itsoffset avance l'audio. Le retard perçu vient
-        # surtout de la latence d'encodage audio (FIFO + aresample) que le media_ts ne voit pas →
-        # avancer l'audio plutôt que le retarder. Magnitude = Δ media_ts (~capture skew).
-        delta = (int(tv) - int(ta)) / 1e9
-        if abs(delta) < 0.5:
-            off = delta
-    print("av-sync: video_ts=%d audio_ts=%d itsoffset_audio=%.4fs" % (tv, ta, off), flush=True)
-    return off
-
 def creer_ffmpeg():
     # -r d'entrée = cadence du signal reçu : EFF_FPS en mode moniteur (le feeder cadence
     # lui-même à cette valeur), sinon la cadence native du pipeline (IN_FPS).
     in_rate = EFF_FPS if HOT_INPUT else IN_FPS
-    av_off = _av_itsoffset()   # offset A/V initial (s) dérivé des timestamps média PTP ; 0 = repli
     cmd = ["ffmpeg",
            "-f", "rawvideo", "-pix_fmt", IN_PIX_FMT,   # layout du shm d'entrée
            "-s", f"{{WIDTH}}x{{HEIGHT}}", "-r", str(in_rate), "-i", "pipe:0"]
@@ -441,10 +413,8 @@ def creer_ffmpeg():
 
     if AUDIO_ENABLED:
         cmd += ["-thread_queue_size", "512",
-                "-f", "s24be", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS)]
-        if av_off:                                  # -itsoffset s'applique à l'INPUT qui suit (audio)
-            cmd += ["-itsoffset", "%.6f" % av_off]
-        cmd += ["-i", AUDIO_FIFO]
+                "-f", "s24be", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS),
+                "-i", AUDIO_FIFO]
         filters, amaps, acodecs, ts_sel, webrtc_sel = _audio_plan()
         # Filtre vidéo dans le même filter_complex que l'audio → on mappe [vout].
         if vchain:
@@ -518,37 +488,51 @@ def audio_feeder():
                     af, shm = _open_audio_shm()
                     last_index = 0
                 wrote_real = False
+                holding = False
                 if shm is not None:
-                    # Streaming FIDÈLE : on écrit chaque nouveau chunk dans l'ordre
-                    # (comme le sender 2110-30) → pas de ré-échantillonnage ni de
-                    # silence intercalé qui déformerait l'audio.
+                    # Streaming FIDÈLE + PHASE-LOCK : on écrit les nouveaux chunks dans l'ordre, mais
+                    # JAMAIS au-delà du playhead vidéo (instant de capture) — on RETIENT les chunks
+                    # plus récents que la frame vidéo en cours → audio et vidéo co-émis = même capture.
                     try:
-                        ci, ts_a = struct.unpack("QQ", shm[0:16])
+                        ci, ts_a, a_mts = struct.unpack("QQQ", shm[0:24])
                     except Exception:
                         shm = None
                         ci = 0
                     if shm is not None and ci > last_index:
-                        n = ci - last_index
-                        if n > A_RING_SIZE:   # gros retard → on saute au plus récent
-                            n = 1
-                        buf = bytearray()
-                        for j in range(ci - n + 1, ci + 1):
-                            off = A_HEADER_SIZE + (j % A_RING_SIZE) * A_CHUNK_SIZE
-                            buf += memoryview(shm)[off:off + A_CHUNK_SIZE]
-                        last_index = ci
-                        with _amap_lock:
-                            idx = list(_amap["slot_src"])
-                        fifo.write(_remap(bytes(buf), idx)); fifo.flush()  # BrokenPipe → handler externe
-                        age_ms = (time.time_ns() - ts_a) / 1e6   # âge du chunk consommé
-                        if 0 <= age_ms < 5000: lat_audio.push(age_ms)
-                        sil_start = time.monotonic(); sil_written = 0
-                        wrote_real = True
+                        emit_to = ci
+                        vmts = _sync_v_mts[0]
+                        if a_mts and vmts:                    # phase-lock actif (media_ts des 2 côtés)
+                            behind = a_mts - vmts             # ns dont le dernier chunk dépasse la vidéo
+                            if behind > 0:
+                                emit_to = ci - int(behind // A_CHUNK_NS)   # retenir les chunks trop récents
+                        if emit_to > last_index:
+                            n = emit_to - last_index
+                            if n > A_RING_SIZE:               # gros retard → saut au récent (borné au playhead)
+                                last_index = emit_to - 1; n = 1
+                            buf = bytearray()
+                            for j in range(emit_to - n + 1, emit_to + 1):
+                                off = A_HEADER_SIZE + (j % A_RING_SIZE) * A_CHUNK_SIZE
+                                buf += memoryview(shm)[off:off + A_CHUNK_SIZE]
+                            last_index = emit_to
+                            with _amap_lock:
+                                idx = list(_amap["slot_src"])
+                            fifo.write(_remap(bytes(buf), idx)); fifo.flush()  # BrokenPipe → handler externe
+                            age_ms = (time.time_ns() - ts_a) / 1e6   # âge du chunk consommé
+                            if 0 <= age_ms < 5000: lat_audio.push(age_ms)
+                            sil_start = time.monotonic(); sil_written = 0
+                            wrote_real = True
+                        else:
+                            holding = True                    # chunks dispo mais RETENUS (audio devant la vidéo)
                 if wrote_real:
                     time.sleep(0.0005)
+                elif holding:
+                    # Audio en avance sur le playhead vidéo : ATTENDRE que la vidéo avance, SANS
+                    # insérer de silence (sinon on décale la timeline → désync). La vidéo avançant en
+                    # temps réel, l'audio reprend juste après → calage maintenu.
+                    time.sleep(0.002)
                 else:
-                    # Pas de chunk frais — shm ABSENT *ou* présent mais SANS nouvelle
-                    # donnée (source muette / ci figé) : silence cadencé (~temps réel)
-                    # pour ne JAMAIS starver ffmpeg → la vidéo continue quoi qu'il arrive.
+                    # Pas de chunk frais — shm ABSENT *ou* ci figé (source muette) : silence cadencé
+                    # (~temps réel) pour ne JAMAIS starver ffmpeg → la vidéo continue quoi qu'il arrive.
                     due = int((time.monotonic() - sil_start) * 1000)
                     guard = 0
                     while sil_written < due and guard < 1000:
@@ -787,7 +771,7 @@ while True:
         diag_win  = time.time()
 
     try:
-        frame_index, ts = struct.unpack("QQ", shm[0:16])
+        frame_index, ts, v_mts = struct.unpack("QQQ", shm[0:24])
 
         if ffmpeg_out.poll() is not None:
             print("FFmpeg arrêté, redémarrage...")
@@ -806,6 +790,7 @@ while True:
                 try:
                     ffmpeg_out.stdin.write(frame_bytes)
                     ffmpeg_out.stdin.flush()
+                    _sync_v_mts[0] = v_mts            # playhead vidéo (capture) → suivi par l'audio
                     win_cnt += 1
                     diag_pushed += 1
                     _el = time.time() - win_start
