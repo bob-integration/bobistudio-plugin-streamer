@@ -1,8 +1,9 @@
 {
-  "version": "0.6.1",
+  "version": "0.6.2",
   "date": "2026-06-05",
   "changes": {
     "Corrections": [
+      "Sync A/V : signe de -itsoffset INVERSÉ (avance l'audio au lieu de le retarder). Constat banc : avec +Δ (retard audio) l'audio était en retard → le décalage perçu est dominé par la latence d'encodage audio (FIFO + aresample) que le media_ts ne voit pas. On avance donc l'audio de Δ (delta = video_ts − audio_ts). À affiner à l'oreille au besoin (un trim manuel pourra remplacer l'auto).",
       "Sync A/V : ne plus gater la correction -itsoffset sur HOT_INPUT. Un monitor AVEC audio est déployé en hot_input=False (monitor.py : audio_shm fourni → fmt=None → hot=False) → le gate excluait justement le monitor audio (itsoffset jamais appliqué). Désormais gaté seulement sur AUDIO_ENABLED + auto-validation des media_ts."
     ],
     "Nouveautés": [
