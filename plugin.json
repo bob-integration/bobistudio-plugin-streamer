@@ -7,7 +7,8 @@
     "class": "mode-stream"
   },
   "deploy_order": 2,
-  "version": "0.7.0",
+  "version": "0.7.5",
+  "resources": {"cores": 4, "memory": 1024, "pin": false},
   "description": "Encodeur/streamer : encode une entrée vidéo (+ audio 8ch) et diffuse vers plusieurs destinations UDP/SRT/WebRTC (un seul encode, fan-out). Édité sur la page I/O (onglet Streams).",
   "nav": {
     "section": "streams",
@@ -25,6 +26,7 @@
     "shm_name": "mxl_mix",
     "audio_shm": null,
     "hot_input": false,
+    "av_offset_ms": 0,
     "video": {
       "codec": "h264",
       "bitrate": "4M",

@@ -107,11 +107,16 @@ A_TOTAL_SIZE  = A_HEADER_SIZE + A_RING_SIZE * A_CHUNK_SIZE
 AUDIO_FIFO    = "/tmp/wudp_audio.raw"
 AUDIO_ENABLED = bool(AUDIO_CFG.get("enabled")) and bool(AUDIO_SHM)
 
-# Phase-lock A/V déterministe : le feeder vidéo publie ici le media_ts (TAI ns, instant de CAPTURE,
-# off16 du header) de la frame qu'il VIENT d'émettre ; le feeder audio n'émet que les chunks dont le
-# media_ts rattrape ce playhead → audio et vidéo co-émis = même instant de capture → ffmpeg muxe
-# aligné (PTS préservés), quelles que soient les latences. 0 = pas encore de frame vidéo média-datée
-# (producteur legacy/simu) → repli sur le débit normal, zéro régression. 1 chunk audio = 1 ms.
+# Calage A/V : offset MANUEL `av_offset_ms` (réglage, signé : >0 retarde l'audio via adelay, <0
+# retarde la vidéo via -itsoffset). Défaut 0 = aucun décalage. UTILE notamment quand la vidéo et
+# l'audio ne suivent PAS le même chemin (ex. vidéo qui traverse un traitement — mixer/dve/correcteur —
+# qui ajoute de la latence, audio direct) : on rattrape le décalage constant introduit. Aussi pour un
+# résiduel d'encodage. À calibrer au banc (clap/flash, ou capture mpegts) sur une sortie qui honore
+# les PTS (UDP/SRT/fichier). NB (banc 2026-06-05) : (1) les GROS décalages A/V venaient de la FAMINE
+# CPU du conteneur (encode 1080p qui ne tient pas le temps réel → l'audio DÉRIVE) — réglée par le
+# profil `resources.cores` du manifeste, pas par un offset ; (2) le calage AUTO par media_ts a été
+# retiré (media_ts audio biaisé + inefficace) ; (3) le transport WebRTC réaligne l'A/V tout seul
+# (RTCP) → un offset ffmpeg n'a aucun effet sur WHEP (n'agit que sur mpegts/fichier).
 _sync_v_mts = [0]
 A_CHUNK_NS  = 1000000
 
@@ -197,7 +202,9 @@ def _dests_summary(up):
 metrics = {{"fps": 0.0, "in_width": 0, "in_height": 0,
             "out_width": OUT_WIDTH, "out_height": OUT_HEIGHT, "out_fps": OUT_FPS,
             "in_fps_seen": 0.0, "pushed_fps": 0.0, "dropped_stale_fps": 0.0,
-            "inputs_latency_ms": {{}}, "out_bitrate_kbps": 0.0, "destinations": []}}
+            "inputs_latency_ms": {{}}, "out_bitrate_kbps": 0.0, "destinations": [],
+            # Calage A/V : délai MANUEL appliqué (signé, ms ; >0 = audio retardé, <0 = vidéo retardée).
+            "av_offset_ms": 0}}
 
 # ─── Instrumentation : tail du stderr ffmpeg (diagnostic backpressure encode/RTSP) ──
 ffmpeg_log = []
@@ -295,7 +302,7 @@ def _pan_slots(base, w):
         return f"pan=stereo|c0=c{{base}}|c1=c{{base+1}}"
     return f"pan=mono|c0=c{{base}}"
 
-def _audio_plan():
+def _audio_plan(a_delay_ms=0):
     """Construit le plan audio : filtres pan (avec asplit si plusieurs consommateurs),
     maps et codecs par flux, et les index de flux de sortie pour le routage tee.
     Sortie : stream 0 = vidéo, puis pistes AAC (si TS), puis 1 piste Opus (si WebRTC).
@@ -328,6 +335,8 @@ def _audio_plan():
     # pour absorber le jitter/drift entre l'horloge du producteur (fifo) et l'encodeur).
     # Corrige l'audio « haché » dû au franchissement de frontière d'horloge.
     asy = "aresample=async=1:min_hard_comp=0.100:first_pts=0"
+    if a_delay_ms > 0:                       # calage A/V manuel : retarder l'audio de av_offset_ms.
+        asy += f",adelay=delays={{a_delay_ms}}:all=1"   # APRÈS first_pts=0 (sinon retrimé) → silence inséré
     if has_ts:
         for i, t in enumerate(tracks):
             filters.append(f"{{labels[li]}}{{_pan_slots(bases[i], widths[i])}},{{asy}}[a{{i}}]"); li += 1
@@ -390,9 +399,20 @@ def creer_ffmpeg():
     # -r d'entrée = cadence du signal reçu : EFF_FPS en mode moniteur (le feeder cadence
     # lui-même à cette valeur), sinon la cadence native du pipeline (IN_FPS).
     in_rate = EFF_FPS if HOT_INPUT else IN_FPS
-    cmd = ["ffmpeg",
-           "-f", "rawvideo", "-pix_fmt", IN_PIX_FMT,   # layout du shm d'entrée
-           "-s", f"{{WIDTH}}x{{HEIGHT}}", "-r", str(in_rate), "-i", "pipe:0"]
+    # Calage A/V MANUEL (réglage `av_offset_ms`, signé, ms) appliqué via les PTS : >0 → retarder
+    # l'audio (adelay, cf. _audio_plan) ; <0 → retarder la vidéo (-itsoffset sur pipe:0, pas de
+    # resampler côté vidéo donc l'itsoffset survit). 0 = aucun décalage (défaut). N'agit que sur les
+    # sorties qui honorent les PTS (mpegts/fichier) ; le WebRTC réaligne lui-même l'A/V (RTCP).
+    av = int(CONFIG.get("av_offset_ms") or 0) * 1000000 if AUDIO_ENABLED else 0
+    a_delay_ms = int(round(av / 1e6)) if av > 0 else 0
+    metrics["av_offset_ms"] = int(round(av / 1e6))        # délai appliqué (signé), exposé sur :8080
+    vin = ["-thread_queue_size", "512",                   # buffer d'entrée vidéo : ffmpeg draine pipe:0
+           "-f", "rawvideo", "-pix_fmt", IN_PIX_FMT,      # indépendamment (sinon bloqué pendant la
+           "-s", f"{{WIDTH}}x{{HEIGHT}}", "-r", str(in_rate)]  # config du filtre [1:a])
+    if av < 0:                                            # vidéo en avance → la retarder
+        vin += ["-itsoffset", f"{{-av / 1e9:.3f}}"]
+    vin += ["-i", "pipe:0"]
+    cmd = ["ffmpeg"] + vin
     ts_sel = webrtc_sel = None
     vchain = _video_filter()
     vopts = ["-c:v", VCODEC,
@@ -415,7 +435,7 @@ def creer_ffmpeg():
         cmd += ["-thread_queue_size", "512",
                 "-f", "s24be", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS),
                 "-i", AUDIO_FIFO]
-        filters, amaps, acodecs, ts_sel, webrtc_sel = _audio_plan()
+        filters, amaps, acodecs, ts_sel, webrtc_sel = _audio_plan(a_delay_ms=a_delay_ms)
         # Filtre vidéo dans le même filter_complex que l'audio → on mappe [vout].
         if vchain:
             filters = [f"[0:v]{{vchain}}[vout]"] + filters
@@ -474,6 +494,22 @@ def audio_feeder():
         except Exception as e:
             print(f"audio fifo open échec : {{e}}"); time.sleep(1); continue
         print("audio fifo connecté à ffmpeg")
+        # Borne la capacité du fifo audio à ~120 ms (par canaux de sortie) : pendant le pic CPU de
+        # démarrage de l'encodeur, ffmpeg lit le fifo en retard → l'audio s'y empile → transitoire de
+        # retard. Le défaut OS (~64 Ko→1 Mo) = des centaines de ms ; ~120 ms suffit, et le blocage
+        # (write bloquant + fifo borné) crée un BACKPRESSURE qui limite ce que ffmpeg ingère (mesuré
+        # meilleur que le non-bloquant+drop, le tampon problématique étant interne à ffmpeg).
+        # F_SETPIPE_SZ=1031 (min 4 Ko, plafond pipe-max-size).
+        try:
+            import fcntl
+            _fsz = max(4096, int(0.12 * OUT_CHANNELS * A_SAMPLE_RATE * A_BYTES_PER_SAMPLE))
+            fcntl.fcntl(fifo.fileno(), 1031, _fsz)
+        except Exception:
+            pass
+        # PAS de lead-in de silence : il décalait l'audio en retard de sa durée (200 ms auparavant).
+        # Le `holding` ayant été retiré (cf. 0.7.1), le feeder ouvre le shm audio dès la 1ère itération
+        # et écrit l'audio RÉEL → ffmpeg obtient sa 1ère frame et configure le filtergraph [1:a] sans
+        # amorce (validé au banc). Si le shm audio tarde, la branche silence ci-dessous prend le relais.
         af = shm = None
         last_index = 0
         last_shm_try = 0.0
@@ -488,48 +524,33 @@ def audio_feeder():
                     af, shm = _open_audio_shm()
                     last_index = 0
                 wrote_real = False
-                holding = False
                 if shm is not None:
-                    # Streaming FIDÈLE + PHASE-LOCK : on écrit les nouveaux chunks dans l'ordre, mais
-                    # JAMAIS au-delà du playhead vidéo (instant de capture) — on RETIENT les chunks
-                    # plus récents que la frame vidéo en cours → audio et vidéo co-émis = même capture.
                     try:
                         ci, ts_a, a_mts = struct.unpack("QQQ", shm[0:24])
                     except Exception:
                         shm = None
                         ci = 0
                     if shm is not None and ci > last_index:
-                        emit_to = ci
-                        vmts = _sync_v_mts[0]
-                        if a_mts and vmts:                    # phase-lock actif (media_ts des 2 côtés)
-                            behind = a_mts - vmts             # ns dont le dernier chunk dépasse la vidéo
-                            if behind > 0:
-                                emit_to = ci - int(behind // A_CHUNK_NS)   # retenir les chunks trop récents
-                        if emit_to > last_index:
-                            n = emit_to - last_index
-                            if n > A_RING_SIZE:               # gros retard → saut au récent (borné au playhead)
-                                last_index = emit_to - 1; n = 1
-                            buf = bytearray()
-                            for j in range(emit_to - n + 1, emit_to + 1):
-                                off = A_HEADER_SIZE + (j % A_RING_SIZE) * A_CHUNK_SIZE
-                                buf += memoryview(shm)[off:off + A_CHUNK_SIZE]
-                            last_index = emit_to
-                            with _amap_lock:
-                                idx = list(_amap["slot_src"])
-                            fifo.write(_remap(bytes(buf), idx)); fifo.flush()  # BrokenPipe → handler externe
-                            age_ms = (time.time_ns() - ts_a) / 1e6   # âge du chunk consommé
-                            if 0 <= age_ms < 5000: lat_audio.push(age_ms)
-                            sil_start = time.monotonic(); sil_written = 0
-                            wrote_real = True
-                        else:
-                            holding = True                    # chunks dispo mais RETENUS (audio devant la vidéo)
+                        # Émet les nouveaux chunks dans l'ordre. Gros retard shm (> ring) → saut direct
+                        # au plus récent. Écriture BLOQUANTE + fifo borné (cf. ouverture) → le
+                        # backpressure limite ce que ffmpeg ingère pendant le pic de démarrage.
+                        n = ci - last_index
+                        if n > A_RING_SIZE:
+                            last_index = ci - 1; n = 1
+                        buf = bytearray()
+                        for j in range(ci - n + 1, ci + 1):
+                            off = A_HEADER_SIZE + (j % A_RING_SIZE) * A_CHUNK_SIZE
+                            buf += memoryview(shm)[off:off + A_CHUNK_SIZE]
+                        last_index = ci
+                        with _amap_lock:
+                            idx = list(_amap["slot_src"])
+                        fifo.write(_remap(bytes(buf), idx)); fifo.flush()  # BrokenPipe → handler externe
+                        age_ms = (time.time_ns() - ts_a) / 1e6   # âge du chunk consommé
+                        if 0 <= age_ms < 5000: lat_audio.push(age_ms)
+                        sil_start = time.monotonic(); sil_written = 0
+                        wrote_real = True
                 if wrote_real:
                     time.sleep(0.0005)
-                elif holding:
-                    # Audio en avance sur le playhead vidéo : ATTENDRE que la vidéo avance, SANS
-                    # insérer de silence (sinon on décale la timeline → désync). La vidéo avançant en
-                    # temps réel, l'audio reprend juste après → calage maintenu.
-                    time.sleep(0.002)
                 else:
                     # Pas de chunk frais — shm ABSENT *ou* ci figé (source muette) : silence cadencé
                     # (~temps réel) pour ne JAMAIS starver ffmpeg → la vidéo continue quoi qu'il arrive.
