@@ -1,7 +1,11 @@
 {
-  "version": "0.7.5",
-  "date": "2026-06-05",
+  "version": "0.7.7",
+  "date": "2026-06-08",
   "changes": {
+    "Nouveautés": [
+      "Injection de format pure (pattern UDC) : POST /input {format:{width, height, chroma, bit_depth, fps}} met à jour TOUS les dérivés d'entrée (IN_PIX_FMT, FRAME_SIZE, TOTAL_SIZE, …) et redémarre ffmpeg sans redéploiement. _detect_dims() maintenu comme FALLBACK uniquement si WIDTH==0 ou HEIGHT==0 au lancement (source inconnue), avec détection combinatoire chroma×profondeur. in_bit_depth exposé dans les métriques :8080.",
+      "Détection automatique de la chroma d'ENTRÉE (0.7.6) : _detect_dims() essaie 422→420→444 (IN_CHROMA en priorité) et retient le format qui satisfait frame_size = w×h×bpp exactement. Plus de dépendance sur le champ chroma de CONFIG. Résultat exposé dans les métriques :8080 (in_chroma). Injection format possible via POST /input {format:{chroma:…}} (hint orchestrateur au câblage) pour les cas où la taille seule est ambiguë."
+    ],
     "Transitoire audio (0.7.5)": [
       "Borne la capacité du fifo audio à ~120 ms (F_SETPIPE_SZ, dimensionné en TEMPS par canaux de sortie). Le fifo OS par défaut (~64 Ko→1 Mo = des centaines de ms) accumulait l'audio pendant le pic CPU de démarrage de l'encodeur → transitoire de retard audio qui se résorbait lentement. ISOLÉ au banc (mesure simultanée source vs sortie) : la source mire est stable (~−40 ms) pendant que la sortie transiente (~+400 ms) → c'était bien la bufferisation côté streamer, pas la source ni le thread_queue (testé sans effet) ni les cœurs. Résultat : pic ~400→~250 ms, régime établi ~24 ms (vs 60-130 avant). Dimensionné en temps (≠ octets fixes) pour rester correct en multi-canaux (8ch). Le transitoire de démarrage résiduel se résorbe et sera plus léger sur une vraie source 1080i50 (2× moins de charge que la mire 1080p50)."
     ],

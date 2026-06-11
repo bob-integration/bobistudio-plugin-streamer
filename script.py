@@ -73,27 +73,44 @@ FRAME_SIZE = int(WIDTH * HEIGHT * _IN_BPP)    # recalculé après _detect_dims (
 TOTAL_SIZE = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
 
 def _detect_dims():
-    """Attend l'apparition du shm et résout la géométrie d'ENTRÉE réelle depuis sa taille.
-    YUV420 → px = frame*2/3. On RESPECTE une résolution configurée (WIDTH/HEIGHT) si elle
-    correspond EXACTEMENT au nombre de pixels du shm (gère un non-16:9 légitime) ; sinon
-    (config absente OU périmée) on déduit en 16:9 → l'encodeur colle toujours au vrai
-    signal reçu, peu importe ce qui a été enregistré. Renvoie (w,h) pairs."""
+    """Fallback uniquement si WIDTH==0 ou HEIGHT==0 (source inconnue au déploiement).
+    Essaie (IN_CHROMA, BIT_DEPTH) en priorité, puis toutes les combinaisons chroma×profondeur.
+    Match exact (frame = w*h*bpp) requis. Renvoie (w, h, chroma, bit_depth)."""
+    _try_order = [(IN_CHROMA, BIT_DEPTH)] + [
+        (c, b) for c in ("422", "420", "444") for b in (8, 10, 12)
+        if (c, b) != (IN_CHROMA, BIT_DEPTH)
+    ]
     while True:
         try:
             if os.path.exists(SHM_PATH) and os.path.getsize(SHM_PATH) > HEADER_SIZE:
                 frame = (os.path.getsize(SHM_PATH) - HEADER_SIZE) // RING_SIZE
-                px = int(frame / _IN_BPP)
-                if px > 0:
-                    if WIDTH > 0 and HEIGHT > 0 and WIDTH * HEIGHT == px:
-                        return WIDTH, HEIGHT
-                    h = int(round(math.sqrt(px * 9 / 16)));  h -= h % 2
-                    w = (px // h) if h else 0;               w -= w % 2
-                    if w > 0 and h > 0:
-                        return w, h
+                if frame > 0:
+                    for chroma, bd in _try_order:
+                        dbps = 2 if bd >= 10 else 1
+                        cw_c, ch_c = _CHROMA_DIV[chroma]
+                        bpp = (1.0 + 2.0 / (cw_c * ch_c)) * dbps
+                        px = int(frame / bpp)
+                        if px <= 0: continue
+                        # Tolérance page-alignment : le C (mtl_rx) arrondit à la page (4096 o)
+                        # → le shm peut être légèrement plus grand que hdr + ring*frame_exact.
+                        _page = 4096 // RING_SIZE + 1
+                        if WIDTH > 0 and HEIGHT > 0:
+                            exact = round(WIDTH * HEIGHT * bpp)
+                            if exact <= frame < exact + _page:
+                                return WIDTH, HEIGHT, chroma, bd
+                        h = int(round(math.sqrt(px * 9 / 16))); h -= h % 2
+                        w = (px // h) if h else 0; w -= w % 2
+                        if w > 0 and h > 0:
+                            exact = round(w * h * bpp)
+                            if exact <= frame < exact + _page:
+                                return w, h, chroma, bd
         except Exception:
             pass
         print(f"detect-dims: attente du shm {{SHM_PATH}}…")
         time.sleep(1)
+
+# Signale au main loop de fermer/rouvrir le shm et relancer ffmpeg (injection format à chaud).
+_restart_signal = threading.Event()
 VCODEC = {{"h264": "libx264", "h265": "libx265"}}.get(VIDEO_CFG.get("codec", "h264"), "libx264")
 
 # ─── Format audio (PCM L24 / 48kHz / 8ch) — identique au sender 2110-30 ──
@@ -153,7 +170,7 @@ _amap_lock = threading.Lock()
 _amap = {{"slot_src": _flatten_channels(_INIT_TRACKS)}}  # slot_src[k] = canal source du slot k
 
 def _remap(buf, idx):
-    """Ré-aiguille les canaux : entrée 8ch interleave s24le → sortie len(idx)ch.
+    """Ré-aiguille les canaux : entrée 8ch interleave s24be → sortie len(idx)ch.
     idx[k] = canal source (0..7) écrit dans le slot de sortie k. Identité si numpy
     absent et idx == range(8)."""
     fr = A_CHANNELS * A_BYTES_PER_SAMPLE
@@ -199,11 +216,10 @@ def _dests_summary(up):
         out.append({{"type": d.get("type"), "target": _dest_target(d), "up": bool(up)}})
     return out
 
-metrics = {{"fps": 0.0, "in_width": 0, "in_height": 0,
+metrics = {{"fps": 0.0, "in_width": 0, "in_height": 0, "in_chroma": IN_CHROMA, "in_bit_depth": BIT_DEPTH,
             "out_width": OUT_WIDTH, "out_height": OUT_HEIGHT, "out_fps": OUT_FPS,
             "in_fps_seen": 0.0, "pushed_fps": 0.0, "dropped_stale_fps": 0.0,
             "inputs_latency_ms": {{}}, "out_bitrate_kbps": 0.0, "destinations": [],
-            # Calage A/V : délai MANUEL appliqué (signé, ms ; >0 = audio retardé, <0 = vidéo retardée).
             "av_offset_ms": 0}}
 
 # ─── Instrumentation : tail du stderr ffmpeg (diagnostic backpressure encode/RTSP) ──
@@ -637,12 +653,38 @@ class ControlHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self._read_json()
         if self.path == "/input":
-            # La re-câblage vidéo à chaud n'a de sens qu'en mode hot (boucle _run_hot).
-            # En mode « Adaptation auto » (non-hot), la boucle lit un SHM_NAME fixe et ignore
-            # _hot_cur → on REFUSE (409) pour que l'appelant (câbles) retombe sur un
-            # redéploiement plutôt que de croire à une bascule réussie silencieusement.
             if not HOT_INPUT:
-                self._reply(409, {{"error": "encodeur non-hot (adaptation auto) : redeploiement requis"}})
+                # En mode non-hot, l'orchestrateur injecte le format au câblage (pattern UDC).
+                # Mettre à jour tous les dérivés et signaler le redémarrage ffmpeg.
+                fmt = body.get("format")
+                if fmt and isinstance(fmt, dict):
+                    global WIDTH, HEIGHT, BIT_DEPTH, IN_CHROMA
+                    global _IN_DEEP, _IN_DBPS, _IN_SUF, IN_PIX_FMT
+                    global _ICW, _ICH, _IN_BPP, FRAME_SIZE, TOTAL_SIZE
+                    new_w = int(fmt.get("width") or WIDTH)
+                    new_h = int(fmt.get("height") or HEIGHT)
+                    new_chroma = str(fmt.get("chroma") or IN_CHROMA)
+                    new_bd = int(fmt.get("bit_depth") or BIT_DEPTH)
+                    if new_chroma not in _CHROMA_DIV:
+                        new_chroma = IN_CHROMA
+                    if new_w > 0: WIDTH = new_w - (new_w % 2)
+                    if new_h > 0: HEIGHT = new_h - (new_h % 2)
+                    BIT_DEPTH   = new_bd
+                    IN_CHROMA   = new_chroma
+                    _IN_DEEP    = BIT_DEPTH >= 10
+                    _IN_DBPS    = 2 if _IN_DEEP else 1
+                    _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
+                    _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]
+                    _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS
+                    IN_PIX_FMT  = _PIX_FMT[IN_CHROMA] + _IN_SUF
+                    FRAME_SIZE  = int(WIDTH * HEIGHT * _IN_BPP)
+                    TOTAL_SIZE  = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
+                    metrics["in_width"]     = WIDTH
+                    metrics["in_height"]    = HEIGHT
+                    metrics["in_chroma"]    = IN_CHROMA
+                    metrics["in_bit_depth"] = BIT_DEPTH
+                    _restart_signal.set()
+                self._reply(200, {{"ok": True}})
                 return
             shm = (body.get("shm") or "").strip()
             with _hot_lock:
@@ -752,13 +794,21 @@ def _run_hot():
 # respecte un non-16:9 exact — cf. _detect_dims). En mode hot-input (moniteur) les
 # dimensions sont imposées (canvas fixe) → pas de détection.
 if not HOT_INPUT:
-    WIDTH, HEIGHT = _detect_dims()
-    FRAME_SIZE = int(WIDTH * HEIGHT * _IN_BPP)
-    TOTAL_SIZE = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
-    print(f"dims entrée résolues: {{WIDTH}}x{{HEIGHT}}")
+    if WIDTH == 0 or HEIGHT == 0:
+        WIDTH, HEIGHT, IN_CHROMA, BIT_DEPTH = _detect_dims()
+        _IN_DEEP    = BIT_DEPTH >= 10
+        _IN_DBPS    = 2 if _IN_DEEP else 1
+        _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
+        _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]
+        _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS
+        IN_PIX_FMT  = _PIX_FMT[IN_CHROMA] + _IN_SUF
+        FRAME_SIZE  = int(WIDTH * HEIGHT * _IN_BPP)
+        TOTAL_SIZE  = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
+        print(f"dims entrée résolues: {{WIDTH}}x{{HEIGHT}} {{IN_CHROMA}} {{BIT_DEPTH}}bit")
 
 # Signal reçu publié sur /metrics (dims d'entrée résolues : config ou auto-détectées).
 metrics["in_width"], metrics["in_height"] = WIDTH, HEIGHT
+metrics["in_chroma"], metrics["in_bit_depth"] = IN_CHROMA, BIT_DEPTH
 
 # Mode moniteur : boucle hot-input dédiée (ne retourne jamais).
 if HOT_INPUT:
@@ -779,6 +829,20 @@ while True:
         bus_error.clear()
         fermer_shm(shm_f, shm)
         time.sleep(2)
+        shm_f, shm = ouvrir_shm()
+        last_index = 0
+        continue
+
+    # Injection de format depuis l'orchestrateur (POST /input {{format:...}})
+    if _restart_signal.is_set():
+        _restart_signal.clear()
+        try: ffmpeg_out.stdin.close()
+        except Exception: pass
+        try: ffmpeg_out.terminate()
+        except Exception: pass
+        time.sleep(0.3)
+        fermer_shm(shm_f, shm)
+        ffmpeg_out = creer_ffmpeg()
         shm_f, shm = ouvrir_shm()
         last_index = 0
         continue
