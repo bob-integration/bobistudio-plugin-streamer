@@ -1,7 +1,10 @@
 {
-  "version": "0.7.7",
-  "date": "2026-06-08",
+  "version": "0.7.8",
+  "date": "2026-06-12",
   "changes": {
+    "Nouveautés (0.7.8)": [
+      "UI de l'éditeur streamer internationalisée (FR/EN) — premier plugin enrobé i18n. control.js passe par window.t('plugin.streamer.*') ; catalogue embarqué plugins/streamer/i18n/fr.json + en.json (91 clés), chargé par app/i18n.py (préfixe plugin. déjà exposé à js_catalog). Le placeholder statique de control.html est traduit au montage via [data-i18n]. Aucun changement fonctionnel ni de script — l'UI est servie en direct par l'orchestrateur (pas de rebuild conteneur)."
+    ],
     "Nouveautés": [
       "Injection de format pure (pattern UDC) : POST /input {format:{width, height, chroma, bit_depth, fps}} met à jour TOUS les dérivés d'entrée (IN_PIX_FMT, FRAME_SIZE, TOTAL_SIZE, …) et redémarre ffmpeg sans redéploiement. _detect_dims() maintenu comme FALLBACK uniquement si WIDTH==0 ou HEIGHT==0 au lancement (source inconnue), avec détection combinatoire chroma×profondeur. in_bit_depth exposé dans les métriques :8080.",
       "Détection automatique de la chroma d'ENTRÉE (0.7.6) : _detect_dims() essaie 422→420→444 (IN_CHROMA en priorité) et retient le format qui satisfait frame_size = w×h×bpp exactement. Plus de dépendance sur le champ chroma de CONFIG. Résultat exposé dans les métriques :8080 (in_chroma). Injection format possible via POST /input {format:{chroma:…}} (hint orchestrateur au câblage) pour les cas où la taille seule est ambiguë."

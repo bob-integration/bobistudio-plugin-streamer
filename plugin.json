@@ -8,7 +8,7 @@
     "oklch": "0.77 0.06 50"
   },
   "deploy_order": 2,
-  "version": "0.7.7",
+  "version": "0.7.8",
   "adapts_input": true,
   "resources": {"cores": 4, "memory": 1024, "pin": false},
   "description": "Encodeur/streamer : encode une entrée vidéo (+ audio 8ch) et diffuse vers plusieurs destinations UDP/SRT/WebRTC (un seul encode, fan-out). Édité sur la page I/O (onglet Streams).",

@@ -11,6 +11,7 @@
 window.MXLPlugins = window.MXLPlugins || {};
 window.MXLPlugins.streamer = (function () {
     let EL = null, VMID = null, TOAST = () => {}, pollTimer = null, firstRender = true, lastC = null, _hostname = '';
+    const T = (k) => (window.t ? window.t(k) : k);   // i18n (catalogue plugin.streamer.*)
 
     const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
         '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -42,26 +43,26 @@ window.MXLPlugins.streamer = (function () {
     function destRow(d){
         d = d || {type:'udp'}; const t = d.type || 'udp';
         return `<div class="dest-row" data-dest>
-            <label class="fld"><span>Type</span>
+            <label class="fld"><span>${esc(T('plugin.streamer.type'))}</span>
                 <select data-f="type" onchange="__streamer.onDestType(this)">
                     <option value="udp" ${t=='udp'?'selected':''}>UDP</option>
                     <option value="srt" ${t=='srt'?'selected':''}>SRT</option>
                     <option value="webrtc" ${t=='webrtc'?'selected':''}>WebRTC</option>
                 </select></label>
             <div class="dest-fields">${destFields(d)}</div>
-            <button class="btn-ghost-icon" onclick="this.closest('[data-dest]').remove()" aria-label="Supprimer la destination" title="Supprimer">✕</button>
+            <button class="btn-ghost-icon" onclick="this.closest('[data-dest]').remove()" aria-label="${esc(T('plugin.streamer.del_dest'))}" title="${esc(T('plugin.streamer.delete'))}">✕</button>
         </div>`;
     }
     function destFields(d){
         const t = d.type || 'udp';
-        if(t=='udp') return txt('host','Hôte',d.host,'192.0.2.21')+num('port','Port',d.port==null?9000:d.port);
-        if(t=='srt') return txt('host','Hôte',d.host,'192.0.2.30')+num('port','Port',d.port==null?9001:d.port)
-            +num('latency_ms','Latence ms',d.latency_ms==null?120:d.latency_ms)
-            +txt('passphrase','Passphrase',d.passphrase)+txt('streamid','Stream ID',d.streamid);
+        if(t=='udp') return txt('host',T('plugin.streamer.host'),d.host,'192.0.2.21')+num('port',T('plugin.streamer.port'),d.port==null?9000:d.port);
+        if(t=='srt') return txt('host',T('plugin.streamer.host'),d.host,'192.0.2.30')+num('port',T('plugin.streamer.port'),d.port==null?9001:d.port)
+            +num('latency_ms',T('plugin.streamer.latency_ms'),d.latency_ms==null?120:d.latency_ms)
+            +txt('passphrase',T('plugin.streamer.passphrase'),d.passphrase)+txt('streamid',T('plugin.streamer.streamid'),d.streamid);
         // Actif par défaut pour une nouvelle destination (enabled undefined) ; on
         // ne décoche que si enabled vaut explicitement false (destination existante).
-        if(t=='webrtc') return txt('path','Chemin (path)',d.path,'stream-221')
-            +`<label class="switch" style="align-self:flex-end;padding-bottom:6px"><input type="checkbox" data-f="enabled" ${d.enabled!==false?'checked':''}><span>Diffuser</span></label>`;
+        if(t=='webrtc') return txt('path',T('plugin.streamer.path'),d.path,'stream-221')
+            +`<label class="switch" style="align-self:flex-end;padding-bottom:6px"><input type="checkbox" data-f="enabled" ${d.enabled!==false?'checked':''}><span>${esc(T('plugin.streamer.broadcast'))}</span></label>`;
         return '';
     }
     function _autoWebrtcPath(){
@@ -95,19 +96,19 @@ window.MXLPlugins.streamer = (function () {
     function chSel(val){ let o=''; for(let i=0;i<8;i++) o+=`<option value="${i}" ${i==val?'selected':''}>${i+1}</option>`; return `<select data-ach>${o}</select>`; }
     function chanFields(ch, stereo){
         const c0=(ch[0]!=null?ch[0]:0), c1=(ch[1]!=null?ch[1]:1);
-        if(stereo) return `<label class="fld"><span>Canal L</span>${chSel(c0)}</label><label class="fld"><span>Canal R</span>${chSel(c1)}</label>`;
-        return `<label class="fld"><span>Canal</span>${chSel(c0)}</label>`;
+        if(stereo) return `<label class="fld"><span>${esc(T('plugin.streamer.chan_l'))}</span>${chSel(c0)}</label><label class="fld"><span>${esc(T('plugin.streamer.chan_r'))}</span>${chSel(c1)}</label>`;
+        return `<label class="fld"><span>${esc(T('plugin.streamer.chan'))}</span>${chSel(c0)}</label>`;
     }
     function audioTrackRow(t){
         const ch=(t&&t.channels)||[0]; const stereo=ch.length>=2;
         return `<div class="dest-row" data-atrack>
-            <label class="fld"><span>Type</span>
+            <label class="fld"><span>${esc(T('plugin.streamer.type'))}</span>
                 <select data-alayout onchange="__streamer.onATrackLayout(this)">
-                    <option value="mono" ${!stereo?'selected':''}>Mono</option>
-                    <option value="stereo" ${stereo?'selected':''}>Stéréo</option>
+                    <option value="mono" ${!stereo?'selected':''}>${esc(T('plugin.streamer.mono'))}</option>
+                    <option value="stereo" ${stereo?'selected':''}>${esc(T('plugin.streamer.stereo'))}</option>
                 </select></label>
             <div class="dest-fields atrack-chans">${chanFields(ch,stereo)}</div>
-            <button class="btn-ghost-icon" onclick="this.closest('[data-atrack]').remove()" aria-label="Supprimer la piste audio" title="Supprimer">✕</button>
+            <button class="btn-ghost-icon" onclick="this.closest('[data-atrack]').remove()" aria-label="${esc(T('plugin.streamer.del_track'))}" title="${esc(T('plugin.streamer.delete'))}">✕</button>
         </div>`;
     }
     function onATrackLayout(sel){ const stereo=sel.value=='stereo';
@@ -125,33 +126,32 @@ window.MXLPlugins.streamer = (function () {
     function bitrateHtml(c){
         const real=(c.live&&c.live.out_bitrate_kbps>0)?fmtKbps(c.live.out_bitrate_kbps):'—';
         const v=c.params.video||{}, a=c.params.audio||{};
-        let cfg='vidéo '+esc(v.bitrate||'?'); if(a.enabled) cfg+=' · audio '+esc(a.bitrate||'?');
-        return `Débit réel : <code>${real}</code> · configuré : ${cfg}`;
+        let cfg=T('plugin.streamer.video')+' '+esc(v.bitrate||'?'); if(a.enabled) cfg+=' · '+T('plugin.streamer.audio')+' '+esc(a.bitrate||'?');
+        return `${T('plugin.streamer.bitrate_real')} <code>${real}</code> · ${T('plugin.streamer.bitrate_cfg')} ${cfg}`;
     }
     function signalHtml(c){
         const L=c.live||{}; const iw=L.in_width||0, ih=L.in_height||0;
         const ifps=(L.fps!=null&&L.fps>0)?Math.round(Number(L.fps)):0;
-        const inTxt=(iw&&ih?`${iw}×${ih}`:'résolution ?')+(ifps?` @${ifps}`:'');
+        const inTxt=(iw&&ih?`${iw}×${ih}`:T('plugin.streamer.res_unknown'))+(ifps?` @${ifps}`:'');
         const ow=L.out_width||0, oh=L.out_height||0, ofps=L.out_fps||0;
-        if(!ow && !oh && !ofps) return `Signal reçu : <code>${esc(inTxt)}</code> <span style="color:var(--text-muted)">· sortie identique (aucune adaptation)</span>`;
+        if(!ow && !oh && !ofps) return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code> <span style="color:var(--text-muted)">· ${esc(T('plugin.streamer.out_same'))}</span>`;
         const outW=ow||iw, outH=oh||ih, outF=ofps||ifps;
         const outTxt=(outW&&outH?`${outW}×${outH}`:'?')+(outF?` @${outF}`:'');
         const scaleAdapt=ow&&oh&&iw&&ih&&(ow!==iw||oh!==ih), fpsAdapt=ofps&&ifps&&(ofps!==ifps);
-        if(scaleAdapt||fpsAdapt){ const what=[scaleAdapt?'redimensionné':null, fpsAdapt?'rééchantillonné':null].filter(Boolean).join(' + ');
-            return `Signal reçu : <code>${esc(inTxt)}</code> <span style="color:var(--status-warning-fg)">→ ${esc(what)} en</span> <code>${esc(outTxt)}</code>`; }
-        return `Signal reçu : <code>${esc(inTxt)}</code> <span style="color:var(--text-muted)">→ sortie <code>${esc(outTxt)}</code> (identique)</span>`;
+        if(scaleAdapt||fpsAdapt){ const what=[scaleAdapt?T('plugin.streamer.resized'):null, fpsAdapt?T('plugin.streamer.resampled'):null].filter(Boolean).join(' + ');
+            return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code> <span style="color:var(--status-warning-fg)">→ ${esc(what)} ${esc(T('plugin.streamer.in_to'))}</span> <code>${esc(outTxt)}</code>`; }
+        return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code> <span style="color:var(--text-muted)">${esc(T('plugin.streamer.out_to'))} <code>${esc(outTxt)}</code> ${esc(T('plugin.streamer.out_identical'))}</span>`;
     }
     function latencyHtml(c){
         const L=(c.live&&c.live.inputs_latency_ms)||{}; const fmt=v=>(v==null?'—':v+' ms');
         const vs=c.params.shm_name, as=c.params.audio_shm, a=c.params.audio||{};
-        let s=`Latence entrée : vidéo <code>${fmt(vs?L[vs]:null)}</code>`;
-        if(a.enabled && as) s+=` · audio <code>${fmt(L[as])}</code>`;
+        let s=`${T('plugin.streamer.latency_in')} <code>${fmt(vs?L[vs]:null)}</code>`;
+        if(a.enabled && as) s+=` · ${T('plugin.streamer.audio')} <code>${fmt(L[as])}</code>`;
         return s;
     }
 
     function hotHelp(hot){
-        if(hot) return "Bascule sans coupure : le Format = la résolution figée de la source (pas de mise à l'échelle). Re-câbler une source de même résolution se fait sans couper le flux.";
-        return "Adaptation auto : le Format est la sortie ; l'entrée est détectée puis redimensionnée/rééchantillonnée si besoin. Re-câbler la source redéploie l'encodeur (brève coupure).";
+        return hot ? T('plugin.streamer.hot_help_on') : T('plugin.streamer.hot_help_off');
     }
     function onHotMode(sel){ const help=EL.querySelector('[data-hot-help]'); if(help) help.textContent=hotHelp(sel.value==='1'); }
 
@@ -178,7 +178,7 @@ window.MXLPlugins.streamer = (function () {
         const sel=EL.querySelector('.dp-format-preset'); if(!sel||!window._videoFormats) return;
         const opts=window._videoFormats.map(f=>
             `<option value="${f.w}x${f.h}" data-label="${esc(f.label)}" data-w="${f.w}" data-h="${f.h}" data-fps="${f.fps}" data-scan="${f.scan}" data-chroma="${f.chroma}" data-bd="${f.bit_depth}" data-colorimetry="${f.colorimetry}">${esc(f.label)}</option>`);
-        sel.innerHTML='<option value="">Suivre l\'entrée (pas de mise à l\'échelle)</option>'+opts.join('');
+        sel.innerHTML='<option value="">'+esc(T('plugin.streamer.follow_input'))+'</option>'+opts.join('');
     }
     function _getFormatValues(){
         const sel=EL.querySelector('.dp-format-preset'); if(!sel||!sel.value) return {w:0,h:0,fps:0};
@@ -205,13 +205,13 @@ window.MXLPlugins.streamer = (function () {
         if(match){ sel.value=match.value; }
         else { const o=document.createElement('option');
             o.value='custom'; o.dataset.w=w; o.dataset.h=h; o.dataset.fps=fps||25; o.dataset.scan='p';
-            o.textContent=`Personnalisé (${w}×${h}${fps?(' @'+fps):''})`;
+            o.textContent=T('plugin.streamer.custom_fmt').replace('{dim}', `${w}×${h}${fps?(' @'+fps):''}`);
             sel.insertBefore(o, sel.options[1]||null); sel.value='custom'; }
     }
 
     // ─── Preview WebRTC ───
     function previewEnabled(){ return localStorage.getItem('mxl.streams.preview.'+VMID)!=='0'; }
-    function previewBtnLabel(on){ return on?'Masquer la prévisualisation':'Afficher la prévisualisation'; }
+    function previewBtnLabel(on){ return on?T('plugin.streamer.preview_hide'):T('plugin.streamer.preview_show'); }
     function hasWebrtc(c){ return (c.params.destinations||[]).some(d=>d.type=='webrtc' && d.enabled); }
     function previewIsActive(c, d){ const ups=liveFor(c);
         return d.embed_url && (ups[d.embed_url]!==undefined ? ups[d.embed_url] : !!(c.live && c.live.fps>0)); }
@@ -237,12 +237,12 @@ window.MXLPlugins.streamer = (function () {
             if(previewIsActive(c,d)){ const con=controlsOn();
                 return `<div>
                     <div class="sect-title" style="display:flex;align-items:center;gap:8px">
-                        <span>Prévisualisation WebRTC — ${esc(d.path)}</span>
-                        <button class="btn-text-action" style="margin-left:auto;text-transform:none" onclick="__streamer.toggleControls()">${con?'Masquer les contrôles':'Afficher les contrôles'}</button>
+                        <span>${esc(T('plugin.streamer.preview_title'))} ${esc(d.path)}</span>
+                        <button class="btn-text-action" style="margin-left:auto;text-transform:none" onclick="__streamer.toggleControls()">${con?esc(T('plugin.streamer.controls_hide')):esc(T('plugin.streamer.controls_show'))}</button>
                     </div>
-                    <iframe src="${esc(mtxPlayerUrl(d.embed_url, con))}" title="Prévisualisation WebRTC ${esc(d.path)}" allow="autoplay" allowfullscreen></iframe></div>`; }
-            if(d.embed_url) return `<div class="preview-note">Prévisualisation <code>${esc(d.path)}</code> indisponible (flux inactif).</div>`;
-            return `<div class="preview-note">WebRTC <code>${esc(d.path)}</code> : configurez la passerelle dans Réglages → WebRTC pour activer la prévisualisation.</div>`;
+                    <iframe src="${esc(mtxPlayerUrl(d.embed_url, con))}" title="${esc(T('plugin.streamer.preview_iframe').replace('{path}', d.path))}" allow="autoplay" allowfullscreen></iframe></div>`; }
+            if(d.embed_url) return `<div class="preview-note">${esc(T('plugin.streamer.preview_off').replace('{path}', d.path))}</div>`;
+            return `<div class="preview-note">${esc(T('plugin.streamer.preview_no_gw').replace('{path}', d.path))}</div>`;
         }).join('');
     }
     function togglePreview(){
@@ -262,13 +262,13 @@ window.MXLPlugins.streamer = (function () {
                 ${l.note?`<div class="meta">${esc(l.note)}</div>`:''}
                 <div class="meta" style="word-break:break-all"><code>${esc(l.url)}</code></div>
             </div>
-            <button class="btn-text-action" title="Copier le lien" onclick="__streamer.copyShareLink('${esc(l.url)}')">Copier</button>
-            <button class="btn-ghost-icon" title="Supprimer le lien" aria-label="Supprimer le lien" onclick="__streamer.deleteShareLink('${esc(l.token)}')">✕</button>
+            <button class="btn-text-action" title="${esc(T('plugin.streamer.copy_link'))}" onclick="__streamer.copyShareLink('${esc(l.url)}')">${esc(T('plugin.streamer.copy'))}</button>
+            <button class="btn-ghost-icon" title="${esc(T('plugin.streamer.del_link'))}" aria-label="${esc(T('plugin.streamer.del_link'))}" onclick="__streamer.deleteShareLink('${esc(l.token)}')">✕</button>
         </div>`;
     }
     function renderShareList(links){
         const box=EL.querySelector('[data-share-list]'); if(!box) return;
-        box.innerHTML=(links&&links.length)?links.map(shareLinkRow).join(''):'<div class="meta">Aucun lien pour l\'instant.</div>';
+        box.innerHTML=(links&&links.length)?links.map(shareLinkRow).join(''):'<div class="meta">'+esc(T('plugin.streamer.no_links'))+'</div>';
     }
     async function loadShareLinks(){
         try{ const r=await fetch('/api/streams/'+VMID+'/share'); if(!r.ok) return; renderShareList(await r.json()); }catch(e){}
@@ -279,21 +279,21 @@ window.MXLPlugins.streamer = (function () {
         try{
             const r=await fetch('/api/streams/'+VMID+'/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
             const j=await r.json();
-            if(!r.ok){ TOAST('Erreur : '+(j.error||'inconnue'),'error'); return; }
-            TOAST('Lien client créé','info'); copyShareLink(j.url); loadShareLinks();
-        }catch(e){ TOAST('Erreur réseau : '+e.message,'error'); }
+            if(!r.ok){ TOAST(T('plugin.streamer.error')+' '+(j.error||T('plugin.streamer.error_unknown')),'error'); return; }
+            TOAST(T('plugin.streamer.link_created'),'info'); copyShareLink(j.url); loadShareLinks();
+        }catch(e){ TOAST(T('plugin.streamer.net_error')+' '+e.message,'error'); }
     }
     async function deleteShareLink(token){
-        if(!confirm('Supprimer ce lien ? Il ne fonctionnera plus.')) return;
+        if(!confirm(T('plugin.streamer.del_link_confirm'))) return;
         try{ const r=await fetch('/api/share/'+encodeURIComponent(token),{method:'DELETE'});
-            if(!r.ok){ TOAST('Suppression impossible','error'); return; }
-            TOAST('Lien supprimé','info'); loadShareLinks();
-        }catch(e){ TOAST('Erreur réseau : '+e.message,'error'); }
+            if(!r.ok){ TOAST(T('plugin.streamer.del_link_fail'),'error'); return; }
+            TOAST(T('plugin.streamer.link_deleted'),'info'); loadShareLinks();
+        }catch(e){ TOAST(T('plugin.streamer.net_error')+' '+e.message,'error'); }
     }
     function copyShareLink(url){
         if(navigator.clipboard && navigator.clipboard.writeText)
-            navigator.clipboard.writeText(url).then(()=>TOAST('Lien copié','info'), ()=>TOAST('Lien : '+url,'info'));
-        else TOAST('Lien : '+url,'info');
+            navigator.clipboard.writeText(url).then(()=>TOAST(T('plugin.streamer.link_copied'),'info'), ()=>TOAST(T('plugin.streamer.link_label')+' '+url,'info'));
+        else TOAST(T('plugin.streamer.link_label')+' '+url,'info');
     }
 
     // ─── Sauvegarde ───
@@ -313,11 +313,11 @@ window.MXLPlugins.streamer = (function () {
         fetch('/api/streams/'+VMID,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
             .then(r=>r.json().then(j=>({ok:r.ok,j})))
             .then(({ok,j})=>{
-                if(!ok){ TOAST('Erreur : '+(j.error||'inconnue'),'error'); return; }
-                if(j.status==='remap_a_chaud'){ TOAST('Canaux audio ré-aiguillés à chaud (sans coupure)','info'); setTimeout(loadOne, 500); }
-                else { TOAST('Déploiement en cours…','info'); firstRender=true; setTimeout(loadOne, 2500); }
+                if(!ok){ TOAST(T('plugin.streamer.error')+' '+(j.error||T('plugin.streamer.error_unknown')),'error'); return; }
+                if(j.status==='remap_a_chaud'){ TOAST(T('plugin.streamer.audio_remapped'),'info'); setTimeout(loadOne, 500); }
+                else { TOAST(T('plugin.streamer.deploying'),'info'); firstRender=true; setTimeout(loadOne, 2500); }
             })
-            .catch(e=>TOAST('Erreur réseau : '+e.message,'error'));
+            .catch(e=>TOAST(T('plugin.streamer.net_error')+' '+e.message,'error'));
     }
 
     // ─── Rendu carte + live update ───
@@ -328,56 +328,56 @@ window.MXLPlugins.streamer = (function () {
         EL.innerHTML=`
         <div class="meta" style="margin-bottom:8px;display:flex;align-items:center;gap:8px">
             <span style="font-family:var(--font-mono);color:${fpsCol}" data-live-fps>${fps} fps</span>
-            <span>Entrée : <code>${esc(p.shm_name||'—')}</code> · IP ${esc(c.ip||'—')}</span>
-            ${p.shm_name ? `<button class="btn-text-action" onclick="MXLMonitor.send('${esc(p.shm_name)}','${esc(c.hostname||'')} (entrée)')">Monitoring</button>` : ''}
+            <span>${esc(T('plugin.streamer.input'))} <code>${esc(p.shm_name||'—')}</code> · IP ${esc(c.ip||'—')}</span>
+            ${p.shm_name ? `<button class="btn-text-action" onclick="MXLMonitor.send('${esc(p.shm_name)}','${esc(c.hostname||'')} ${esc(T('plugin.streamer.input_suffix'))}')">${esc(T('plugin.streamer.monitoring'))}</button>` : ''}
         </div>
         <div class="meta" style="margin-bottom:8px" data-bitrate>${bitrateHtml(c)}</div>
         <div class="meta" style="margin-bottom:8px" data-signal>${signalHtml(c)}</div>
         <div class="meta" style="margin-bottom:8px" data-latency>${latencyHtml(c)}</div>
 
         <div class="sect">
-            <div class="sect-title">Encodage</div>
+            <div class="sect-title">${esc(T('plugin.streamer.encoding'))}</div>
             <div class="fld-grid">
-                <label class="fld"><span>Codec vidéo</span><select data-f="video.codec">${opt(CODECS,v.codec)}</select></label>
-                ${txt('video.bitrate','Débit',v.bitrate,'4M')}
-                <label class="fld"><span>Preset</span><select data-f="video.preset">${opt(PRESETS,v.preset)}</select></label>
-                ${num('video.gop','GOP',v.gop)}
-                <label class="fld"><span>Chroma</span><select data-f="video.chroma">${opt(CHROMA,v.chroma||'422')}</select></label>
-                <label class="fld" style="grid-column:span 2"><span>Mode source</span>
+                <label class="fld"><span>${esc(T('plugin.streamer.video_codec'))}</span><select data-f="video.codec">${opt(CODECS,v.codec)}</select></label>
+                ${txt('video.bitrate',T('plugin.streamer.bitrate'),v.bitrate,'4M')}
+                <label class="fld"><span>${esc(T('plugin.streamer.preset'))}</span><select data-f="video.preset">${opt(PRESETS,v.preset)}</select></label>
+                ${num('video.gop',T('plugin.streamer.gop'),v.gop)}
+                <label class="fld"><span>${esc(T('plugin.streamer.chroma'))}</span><select data-f="video.chroma">${opt(CHROMA,v.chroma||'422')}</select></label>
+                <label class="fld" style="grid-column:span 2"><span>${esc(T('plugin.streamer.src_mode'))}</span>
                     <select data-f="hot_input" onchange="__streamer.onHotMode(this)">
-                        <option value="0" ${p.hot_input?'':'selected'}>Adaptation auto (détecte et adapte l'entrée)</option>
-                        <option value="1" ${p.hot_input?'selected':''}>Bascule sans coupure (format figé = source)</option>
+                        <option value="0" ${p.hot_input?'':'selected'}>${esc(T('plugin.streamer.src_auto'))}</option>
+                        <option value="1" ${p.hot_input?'selected':''}>${esc(T('plugin.streamer.src_hot'))}</option>
                     </select></label>
-                <label class="fld" style="grid-column:span 2"><span>Format de sortie</span>
-                    <select class="dp-format-preset" onchange="__streamer.onStreamFormatChange(this)"><option value="">Suivre l'entrée (pas de mise à l'échelle)</option></select></label>
+                <label class="fld" style="grid-column:span 2"><span>${esc(T('plugin.streamer.out_format'))}</span>
+                    <select class="dp-format-preset" onchange="__streamer.onStreamFormatChange(this)"><option value="">${esc(T('plugin.streamer.follow_input'))}</option></select></label>
             </div>
             <div class="meta" style="margin-top:6px" data-hot-help>${hotHelp(!!p.hot_input)}</div>
-            <div class="sect-title" style="margin-top:10px">Colorimétrie</div>
+            <div class="sect-title" style="margin-top:10px">${esc(T('plugin.streamer.colorimetry'))}</div>
             <div class="fld-grid">
-                <label class="fld"><span>Primaries</span><select data-f="video.color_primaries">${opt(PRIMARIES,v.color_primaries||'')}</select></label>
-                <label class="fld"><span>Transfert (TRC)</span><select data-f="video.color_trc">${opt(TRC,v.color_trc||'')}</select></label>
-                <label class="fld"><span>Espace</span><select data-f="video.colorspace">${opt(SPACE,v.colorspace||'')}</select></label>
+                <label class="fld"><span>${esc(T('plugin.streamer.primaries'))}</span><select data-f="video.color_primaries">${opt(PRIMARIES,v.color_primaries||'')}</select></label>
+                <label class="fld"><span>${esc(T('plugin.streamer.trc'))}</span><select data-f="video.color_trc">${opt(TRC,v.color_trc||'')}</select></label>
+                <label class="fld"><span>${esc(T('plugin.streamer.space'))}</span><select data-f="video.colorspace">${opt(SPACE,v.colorspace||'')}</select></label>
             </div>
-            <div class="meta" style="margin-top:6px">« auto » = laissé à ffmpeg (pas de flag forcé).</div>
+            <div class="meta" style="margin-top:6px">${esc(T('plugin.streamer.auto_note'))}</div>
         </div>
 
         <div class="sect">
-            <div class="sect-title">Audio</div>
-            <label class="switch" style="margin-bottom:10px"><input type="checkbox" data-f="audio.enabled" ${a.enabled?'checked':''}><span>Activer l'audio</span></label>
+            <div class="sect-title">${esc(T('plugin.streamer.audio'))}</div>
+            <label class="switch" style="margin-bottom:10px"><input type="checkbox" data-f="audio.enabled" ${a.enabled?'checked':''}><span>${esc(T('plugin.streamer.audio_enable'))}</span></label>
             <div class="fld-grid">
-                ${txt('audio.bitrate','Débit / piste',a.bitrate,'128k')}
-                <label class="fld"><span>SHM audio (câblé)</span>
-                    <input type="text" value="${esc(p.audio_shm||'')}" readonly placeholder="câbler via la page Câbles" style="opacity:.7"></label>
+                ${txt('audio.bitrate',T('plugin.streamer.bitrate_track'),a.bitrate,'128k')}
+                <label class="fld"><span>${esc(T('plugin.streamer.audio_shm'))}</span>
+                    <input type="text" value="${esc(p.audio_shm||'')}" readonly placeholder="${esc(T('plugin.streamer.audio_shm_ph'))}" style="opacity:.7"></label>
             </div>
-            <div class="meta" style="margin:6px 0">Source 8 canaux. Chaque piste = 1 canal (mono) ou 2 (stéréo). UDP/SRT portent toutes les pistes ; WebRTC la 1ʳᵉ (Opus).</div>
+            <div class="meta" style="margin:6px 0">${esc(T('plugin.streamer.audio_hint'))}</div>
             <div data-atracks>${(a.tracks||[]).map(audioTrackRow).join('')}</div>
-            <button class="btn" onclick="__streamer.addATrack()">+ Ajouter une piste audio</button>
+            <button class="btn" onclick="__streamer.addATrack()">${esc(T('plugin.streamer.add_track'))}</button>
         </div>
 
         <div class="sect">
-            <div class="sect-title">Destinations</div>
+            <div class="sect-title">${esc(T('plugin.streamer.destinations'))}</div>
             <div data-dests>${(p.destinations||[]).map(destRow).join('')}</div>
-            <button class="btn" onclick="__streamer.addDest()">+ Ajouter une destination</button>
+            <button class="btn" onclick="__streamer.addDest()">${esc(T('plugin.streamer.add_dest'))}</button>
         </div>
 
         ${hasWebrtc(c) ? `<div class="st-prev-toggle-row">
@@ -387,18 +387,18 @@ window.MXLPlugins.streamer = (function () {
         <div data-webrtc-preview class="webrtc-preview" data-sig="${esc(previewSig(c))}">${previewHtml(c)}</div>
 
         ${hasWebrtc(c) ? `<div class="sect" data-share-sect>
-            <div class="sect-title">Lien client (page publique)</div>
-            <div class="meta" style="margin-bottom:8px">Page brandée à envoyer à un client pour visionner ce flux. Lien à identifiant aléatoire, révocable.</div>
+            <div class="sect-title">${esc(T('plugin.streamer.share_title'))}</div>
+            <div class="meta" style="margin-bottom:8px">${esc(T('plugin.streamer.share_hint'))}</div>
             <div class="fld-grid" style="margin-bottom:8px">
-                ${txt('share.title','Nom du flux affiché',c.hostname||'')}
-                ${txt('share.note','Message personnalisé','','ex : Régie principale')}
+                ${txt('share.title',T('plugin.streamer.share_name'),c.hostname||'')}
+                ${txt('share.note',T('plugin.streamer.share_note'),'',T('plugin.streamer.share_note_ph'))}
             </div>
-            <button class="btn btn-blue" onclick="__streamer.createShareLink()">+ Créer un lien</button>
+            <button class="btn btn-blue" onclick="__streamer.createShareLink()">${esc(T('plugin.streamer.share_create'))}</button>
             <div data-share-list style="margin-top:10px"></div>
         </div>` : ''}
 
         <div style="display:flex;justify-content:flex-end;margin-top:10px">
-            <button class="btn btn-blue" onclick="__streamer.saveStream()">Enregistrer &amp; déployer</button>
+            <button class="btn btn-blue" onclick="__streamer.saveStream()">${esc(T('plugin.streamer.save_deploy'))}</button>
         </div>`;
     }
 
@@ -416,7 +416,7 @@ window.MXLPlugins.streamer = (function () {
     async function loadOne(){
         let c;
         try { const r=await fetch('/api/streams/'+VMID); if(!r.ok) throw new Error('HTTP '+r.status); c=await r.json(); }
-        catch(e){ if(firstRender && EL) EL.innerHTML='<div class="meta">Encodeur indisponible.</div>'; return; }
+        catch(e){ if(firstRender && EL) EL.innerHTML='<div class="meta">'+esc(T('plugin.streamer.unavailable'))+'</div>'; return; }
         lastC=c;
         if(firstRender){
             renderInner(c); firstRender=false;
@@ -431,6 +431,8 @@ window.MXLPlugins.streamer = (function () {
         EL = el.querySelector('.st-body') || el;
         VMID = vmid; TOAST = (ctx && ctx.toast) || (()=>{});
         firstRender = true; lastC = null;
+        // Traduit le placeholder statique du fragment (servi sans Jinja).
+        el.querySelectorAll('[data-i18n]').forEach(n => { n.textContent = T(n.dataset.i18n); });
         loadOne();
         if(pollTimer) clearInterval(pollTimer);
         pollTimer = setInterval(loadOne, 5000);
