@@ -734,6 +734,11 @@ def _run_hot():
     cur_name = None; f = m = None
     last_index = 0; last_frame = None
     win_cnt = 0; win_start = time.time()   # fps sur fenêtre glissante (~1s), pas cumulé
+    # Diagnostics fenêtre glissante (miroir de la boucle normale) : production vue côté SOURCE
+    # (delta d'index → in_fps_seen, détecte une source figée) et frames réellement poussées
+    # (pushed_fps ≈ FPS de sortie). dropped_stale_fps reste 0 : le mode moniteur répète la
+    # dernière frame à cadence fixe, il ne jette JAMAIS pour péremption.
+    diag_seen = diag_pushed = 0; diag_win = time.time()
     interval = 1.0 / FPS; next_t = time.time()
     print(f"hot-input actif {{WIDTH}}x{{HEIGHT}}@{{FPS}} — source initiale {{_hot_cur['shm']!r}}")
     while True:
@@ -760,6 +765,9 @@ def _run_hot():
             try:
                 fi, ts = struct.unpack("QQ", m[0:16])
                 if fi != last_index and fi != 0:
+                    # Production source : compte le delta d'index (garde anti-reset : sur
+                    # changement de source / wrap / 1re frame, last_index repart à 0 → +1).
+                    diag_seen += (fi - last_index) if 0 < last_index < fi else 1
                     slot = fi % RING_SIZE
                     off  = HEADER_SIZE + slot * FRAME_SIZE
                     last_frame = bytes(memoryview(m)[off:off + FRAME_SIZE])
@@ -779,13 +787,20 @@ def _run_hot():
             buf = last_frame if last_frame is not None else black
             try:
                 ffmpeg_out.stdin.write(buf); ffmpeg_out.stdin.flush()
-                win_cnt += 1
+                win_cnt += 1; diag_pushed += 1
                 _el = time.time() - win_start
                 if _el >= 1.0:
                     _refresh_metrics(fps=round(win_cnt / _el, 1), up=True)
                     win_cnt = 0; win_start = time.time()
             except BrokenPipeError:
                 time.sleep(0.3); ffmpeg_out = creer_ffmpeg()
+            # Publication des diagnostics source/push sur ~1s glissante.
+            _eld = time.time() - diag_win
+            if _eld >= 1.0:
+                metrics["in_fps_seen"]       = round(diag_seen / _eld, 1)
+                metrics["pushed_fps"]        = round(diag_pushed / _eld, 1)
+                metrics["dropped_stale_fps"] = 0.0
+                diag_seen = diag_pushed = 0; diag_win = time.time()
             next_t += interval
             if next_t < now: next_t = now + interval
         time.sleep(0.001)

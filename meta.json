@@ -1,7 +1,10 @@
 {
-  "version": "0.7.9",
-  "date": "2026-06-14",
+  "version": "0.7.10",
+  "date": "2026-06-15",
   "changes": {
+    "Corrections (0.7.10)": [
+      "Métriques in_fps_seen / pushed_fps / dropped_stale_fps désormais renseignées en mode MONITEUR (hot_input). Elles n'étaient calculées que dans la boucle d'alimentation normale (événementielle), or `_run_hot()` (cadencée à l'horloge, genlock) ne retourne jamais → ces 3 champs restaient figés à 0 alors que le flux tournait (fps/out_bitrate corrects), donnant l'illusion d'une panne. Instrumentation de la boucle hot avec une fenêtre glissante ~1s : in_fps_seen = cadence de PRODUCTION réelle de la source surveillée (delta des frame_index, garde anti-reset sur changement de source/wrap → détecte une source figée) ; pushed_fps = cadence de push réelle (≈ FPS de sortie) ; dropped_stale_fps = 0 (exact : le mode moniteur répète la dernière frame à cadence fixe, il ne jette jamais pour péremption). Aucune clé de métrique modifiée."
+    ],
     "Corrections (0.7.9)": [
       "Le streamer est désormais déployé (chemin compute Docker) sur l'image **bobi-media** et non plus bobi-compute (manifeste `image: media`). CAUSE : le streamer shell-out vers ffmpeg (creer_ffmpeg), or l'image bobi-compute est lean numpy SANS ffmpeg → le script crashait au lancement (FileNotFoundError: 'ffmpeg', main.py:477) → l'agent :8080 jamais up → la surveillance recréait le conteneur en boucle (vécu : monitor-u1 sur controleur-1/node-1, bobi-cmp-2003 en crash-loop, exit 137). bobi-media embarque ffmpeg (+ GStreamer). Aucun changement de script. NB : impose que le nœud porte l'image bobi-media (media_image) ; redéployer les streamers/monitors existants pour basculer d'image. Sans effet sur le backend LXC (image non concernée)."
     ],
