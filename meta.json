@@ -1,7 +1,10 @@
 {
-  "version": "0.7.8",
-  "date": "2026-06-12",
+  "version": "0.7.9",
+  "date": "2026-06-14",
   "changes": {
+    "Corrections (0.7.9)": [
+      "Le streamer est désormais déployé (chemin compute Docker) sur l'image **bobi-media** et non plus bobi-compute (manifeste `image: media`). CAUSE : le streamer shell-out vers ffmpeg (creer_ffmpeg), or l'image bobi-compute est lean numpy SANS ffmpeg → le script crashait au lancement (FileNotFoundError: 'ffmpeg', main.py:477) → l'agent :8080 jamais up → la surveillance recréait le conteneur en boucle (vécu : monitor-u1 sur controleur-1/node-1, bobi-cmp-2003 en crash-loop, exit 137). bobi-media embarque ffmpeg (+ GStreamer). Aucun changement de script. NB : impose que le nœud porte l'image bobi-media (media_image) ; redéployer les streamers/monitors existants pour basculer d'image. Sans effet sur le backend LXC (image non concernée)."
+    ],
     "Nouveautés (0.7.8)": [
       "UI de l'éditeur streamer internationalisée (FR/EN) — premier plugin enrobé i18n. control.js passe par window.t('plugin.streamer.*') ; catalogue embarqué plugins/streamer/i18n/fr.json + en.json (91 clés), chargé par app/i18n.py (préfixe plugin. déjà exposé à js_catalog). Le placeholder statique de control.html est traduit au montage via [data-i18n]. Aucun changement fonctionnel ni de script — l'UI est servie en direct par l'orchestrateur (pas de rebuild conteneur)."
     ],
