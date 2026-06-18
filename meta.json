@@ -1,7 +1,10 @@
 {
-  "version": "0.7.10",
-  "date": "2026-06-15",
+  "version": "0.7.11",
+  "date": "2026-06-18",
   "changes": {
+    "Corrections (0.7.11)": [
+      "Manifeste `runtime: docker` (rattrapage full-Docker). Le streamer était le SEUL type compute/média encore en runtime LXC implicite (tous les autres — multiview/mixer/player/recorder/transcoder/… — sont déjà runtime:docker). Conséquence : dans la palette de création, le streamer s'affichait avec un nœud « optionnel » + champs cœurs/RAM LXC ; sans nœud sélectionné (le défaut), le POST partait sans node_id/backend et `routes.creer` tombait sur le garde-fou final « Backend LXC retiré — créez le conteneur sur un nœud Docker » → création impossible (symptôme : 'je n'arrive pas à créer de container stream sur node-1'). Avec runtime:docker, `_is_docker_type` est vrai → nœud Docker obligatoire dans la palette et auto-routage vers le chemin compute (image bobi-media déjà déclarée). Aucun changement de script ni de déploiement des streamers existants."
+    ],
     "Corrections (0.7.10)": [
       "Métriques in_fps_seen / pushed_fps / dropped_stale_fps désormais renseignées en mode MONITEUR (hot_input). Elles n'étaient calculées que dans la boucle d'alimentation normale (événementielle), or `_run_hot()` (cadencée à l'horloge, genlock) ne retourne jamais → ces 3 champs restaient figés à 0 alors que le flux tournait (fps/out_bitrate corrects), donnant l'illusion d'une panne. Instrumentation de la boucle hot avec une fenêtre glissante ~1s : in_fps_seen = cadence de PRODUCTION réelle de la source surveillée (delta des frame_index, garde anti-reset sur changement de source/wrap → détecte une source figée) ; pushed_fps = cadence de push réelle (≈ FPS de sortie) ; dropped_stale_fps = 0 (exact : le mode moniteur répète la dernière frame à cadence fixe, il ne jette jamais pour péremption). Aucune clé de métrique modifiée."
     ],

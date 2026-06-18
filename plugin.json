@@ -8,7 +8,8 @@
     "oklch": "0.77 0.06 50"
   },
   "deploy_order": 2,
-  "version": "0.7.10",
+  "version": "0.7.11",
+  "runtime": "docker",
   "adapts_input": true,
   "image": "media",
   "resources": {"cores": 4, "memory": 1024, "pin": false},
