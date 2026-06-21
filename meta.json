@@ -1,7 +1,10 @@
 {
-  "version": "0.7.11",
-  "date": "2026-06-18",
+  "version": "0.8.0",
+  "date": "2026-06-21",
   "changes": {
+    "Nouveautés (0.8.0)": [
+      "Migration MXL (Phase 1) : entrée VIDÉO lue via bobimxl.Reader (get_latest → grain planar poussé tel quel dans ffmpeg, zéro-copie), format résolu DU flow_def (reader.format(), fin de l'heuristique _detect_dims). Les deux boucles (moniteur hot-input + normal) migrées ; filtre de fraîcheur (≥80 ms) et latence transit en TAI (now_tai - lastWriteTime). AUDIO inchangé (legacy mmap L24) : différé jusqu'au producteur audio MXL (Phase 2). Requiert l'image bobi-media >= 0.2 (libmxl + bobimxl)."
+    ],
     "Corrections (0.7.11)": [
       "Manifeste `runtime: docker` (rattrapage full-Docker). Le streamer était le SEUL type compute/média encore en runtime LXC implicite (tous les autres — multiview/mixer/player/recorder/transcoder/… — sont déjà runtime:docker). Conséquence : dans la palette de création, le streamer s'affichait avec un nœud « optionnel » + champs cœurs/RAM LXC ; sans nœud sélectionné (le défaut), le POST partait sans node_id/backend et `routes.creer` tombait sur le garde-fou final « Backend LXC retiré — créez le conteneur sur un nœud Docker » → création impossible (symptôme : 'je n'arrive pas à créer de container stream sur node-1'). Avec runtime:docker, `_is_docker_type` est vrai → nœud Docker obligatoire dans la palette et auto-routage vers le chemin compute (image bobi-media déjà déclarée). Aucun changement de script ni de déploiement des streamers existants."
     ],

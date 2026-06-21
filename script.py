@@ -5,6 +5,7 @@
 
 import mmap, struct, time, subprocess, threading, json, signal, os, math
 from collections import deque
+import bobimxl   # migration MXL Phase 1 : entrée VIDÉO via Reader (audio = legacy mmap, différé)
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ─── Config injectée (contrat plugin) ───────────────────────────────
@@ -28,6 +29,7 @@ DESTINATIONS = CONFIG.get("destinations") or []
 HOT_INPUT    = _as_bool(CONFIG.get("hot_input"))   # mode moniteur : source re-câblable à chaud (dims FIXES)
 
 SHM_PATH = f"/dev/shm/{{SHM_NAME}}"
+inst = bobimxl.Instance()   # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl) — flux vidéo d'entrée
 # ── Sémantique format : le format CONFIGURÉ est la SORTIE souhaitée — TOUJOURS honorée,
 # jamais ignorée ni modifiée. L'ENTRÉE (signal reçu) est ce qui arrive réellement dans le
 # shm ; si elle diffère, l'encodeur l'AJUSTE (mise à l'échelle + rééchantillonnage). ──
@@ -73,40 +75,17 @@ FRAME_SIZE = int(WIDTH * HEIGHT * _IN_BPP)    # recalculé après _detect_dims (
 TOTAL_SIZE = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
 
 def _detect_dims():
-    """Fallback uniquement si WIDTH==0 ou HEIGHT==0 (source inconnue au déploiement).
-    Essaie (IN_CHROMA, BIT_DEPTH) en priorité, puis toutes les combinaisons chroma×profondeur.
-    Match exact (frame = w*h*bpp) requis. Renvoie (w, h, chroma, bit_depth)."""
-    _try_order = [(IN_CHROMA, BIT_DEPTH)] + [
-        (c, b) for c in ("422", "420", "444") for b in (8, 10, 12)
-        if (c, b) != (IN_CHROMA, BIT_DEPTH)
-    ]
+    """Résout (w, h, chroma, bit_depth) depuis le flow_def du flux d'entrée MXL (source de
+    vérité côté donnée). Attend que le flux existe. Remplace l'ancienne heuristique 16:9."""
     while True:
         try:
-            if os.path.exists(SHM_PATH) and os.path.getsize(SHM_PATH) > HEADER_SIZE:
-                frame = (os.path.getsize(SHM_PATH) - HEADER_SIZE) // RING_SIZE
-                if frame > 0:
-                    for chroma, bd in _try_order:
-                        dbps = 2 if bd >= 10 else 1
-                        cw_c, ch_c = _CHROMA_DIV[chroma]
-                        bpp = (1.0 + 2.0 / (cw_c * ch_c)) * dbps
-                        px = int(frame / bpp)
-                        if px <= 0: continue
-                        # Tolérance page-alignment : le C (mtl_rx) arrondit à la page (4096 o)
-                        # → le shm peut être légèrement plus grand que hdr + ring*frame_exact.
-                        _page = 4096 // RING_SIZE + 1
-                        if WIDTH > 0 and HEIGHT > 0:
-                            exact = round(WIDTH * HEIGHT * bpp)
-                            if exact <= frame < exact + _page:
-                                return WIDTH, HEIGHT, chroma, bd
-                        h = int(round(math.sqrt(px * 9 / 16))); h -= h % 2
-                        w = (px // h) if h else 0; w -= w % 2
-                        if w > 0 and h > 0:
-                            exact = round(w * h * bpp)
-                            if exact <= frame < exact + _page:
-                                return w, h, chroma, bd
+            r = bobimxl.Reader(inst, SHM_NAME)
+            f = r.format(); r.close()
+            if f:
+                return f["width"], f["height"], f["chroma"], f["bit_depth"]
         except Exception:
             pass
-        print(f"detect-dims: attente du shm {{SHM_PATH}}…")
+        print(f"detect-dims: attente du flux MXL {{SHM_NAME}}…")
         time.sleep(1)
 
 # Signale au main loop de fermer/rouvrir le shm et relancer ffmpeg (injection format à chaud).
@@ -592,25 +571,18 @@ if AUDIO_ENABLED:
 
 # ─── Ouverture du shm vidéo ──────────────────────────────────────────
 def ouvrir_shm():
+    """Ouvre le flux vidéo MXL d'entrée (Reader). Attend qu'il existe."""
     while True:
         try:
-            if not os.path.exists(SHM_PATH):
-                raise FileNotFoundError(f"{{SHM_PATH}} n'existe pas")
-            if os.path.getsize(SHM_PATH) < TOTAL_SIZE:
-                raise ValueError(f"{{SHM_PATH}} trop petit")
-            f = open(SHM_PATH, "r+b")
-            shm = mmap.mmap(f.fileno(), TOTAL_SIZE)
-            _ = shm[0:16]
-            print(f"SHM ouvert : {{SHM_PATH}}")
-            return f, shm
+            r = bobimxl.Reader(inst, SHM_NAME)
+            print(f"flux MXL ouvert : {{SHM_NAME}}")
+            return r
         except Exception as e:
-            print(f"SHM indisponible, attente... ({{e}})")
+            print(f"flux MXL indisponible, attente... ({{e}})")
             time.sleep(1)
 
-def fermer_shm(shm_f, shm):
-    try: shm.close()
-    except Exception: pass
-    try: shm_f.close()
+def fermer_shm(reader):
+    try: reader.close()
     except Exception: pass
 
 # ─── Mode hot-input (moniteur) : change de source sans redéployer ────────────
@@ -623,16 +595,11 @@ _hot_lock = threading.Lock()
 _hot_cur  = {{"shm": SHM_NAME or ""}}
 
 def _open_named(name):
-    path = f"/dev/shm/{{name}}"
+    """Reader MXL du flux `name`, ou None si absent (mode moniteur : source re-câblable)."""
     try:
-        if not name or not os.path.exists(path) or os.path.getsize(path) < TOTAL_SIZE:
-            return None, None
-        f = open(path, "r+b")
-        m = mmap.mmap(f.fileno(), TOTAL_SIZE)
-        _ = m[0:16]
-        return f, m
+        return bobimxl.Reader(inst, name) if name else None
     except Exception:
-        return None, None
+        return None
 
 class ControlHandler(BaseHTTPRequestHandler):
     """Contrôle à chaud sur :8082.
@@ -731,7 +698,7 @@ def _run_hot():
     global ffmpeg_out
     black = b"\x10" * (WIDTH * HEIGHT) + b"\x80" * ((WIDTH // _ICW) * (HEIGHT // _ICH) * 2)
     ffmpeg_out = creer_ffmpeg()
-    cur_name = None; f = m = None
+    cur_name = None; r = None
     last_index = 0; last_frame = None
     win_cnt = 0; win_start = time.time()   # fps sur fenêtre glissante (~1s), pas cumulé
     # Diagnostics fenêtre glissante (miroir de la boucle normale) : production vue côté SOURCE
@@ -745,41 +712,40 @@ def _run_hot():
         if bus_error.is_set():
             bus_error.clear()
             try:
-                if m: m.close()
-                if f: f.close()
+                if r: r.close()
             except Exception: pass
-            f = m = None; cur_name = None; last_frame = None
+            r = None; cur_name = None; last_frame = None
             time.sleep(1)
         with _hot_lock: want = _hot_cur["shm"]
         if want != cur_name:
             try:
-                if m: m.close()
-                if f: f.close()
+                if r: r.close()
             except Exception: pass
-            f, m = _open_named(want)
+            r = _open_named(want)
             cur_name = want; last_index = 0; last_frame = None
-        elif m is None and want:
-            f, m = _open_named(want)   # source pas encore prête : retente
-            if m is not None: last_index = 0
-        if m is not None:
+        elif r is None and want:
+            r = _open_named(want)   # source pas encore prête : retente
+            if r is not None: last_index = 0
+        if r is not None:
             try:
-                fi, ts = struct.unpack("QQ", m[0:16])
-                if fi != last_index and fi != 0:
-                    # Production source : compte le delta d'index (garde anti-reset : sur
-                    # changement de source / wrap / 1re frame, last_index repart à 0 → +1).
-                    diag_seen += (fi - last_index) if 0 < last_index < fi else 1
-                    slot = fi % RING_SIZE
-                    off  = HEADER_SIZE + slot * FRAME_SIZE
-                    last_frame = bytes(memoryview(m)[off:off + FRAME_SIZE])
-                    last_index = fi
-                    age_us = (time.time_ns() - ts) // 1000
-                    if 0 <= age_us < 5_000_000: lat_in.push(age_us / 1000.0)
+                got = r.get_latest()
+                # Garde monitor : ne JAMAIS pousser un grain de taille ≠ canvas (FRAME_SIZE) à
+                # ffmpeg — un re-point (hot) vers une autre résolution sans redéploiement
+                # corromprait le flux. Trame ignorée jusqu'au redéploiement au bon format.
+                if got is not None and len(got[2]) == FRAME_SIZE:
+                    fi = got[0]
+                    if fi != last_index:
+                        # Production source : delta d'index (garde anti-reset → +1 au 1er coup).
+                        diag_seen += (fi - last_index) if 0 < last_index < fi else 1
+                        last_frame = bytes(got[2])           # grain = trame planar complète
+                        last_index = fi
+                        age_us = (bobimxl.now_tai() - r.last_write_time()) // 1000
+                        if 0 <= age_us < 5_000_000: lat_in.push(age_us / 1000.0)
             except Exception:
                 try:
-                    if m: m.close()
-                    if f: f.close()
+                    if r: r.close()
                 except Exception: pass
-                f = m = None; cur_name = None; last_frame = None
+                r = None; cur_name = None; last_frame = None
         now = time.time()
         if now >= next_t:
             if ffmpeg_out.poll() is not None:
@@ -830,7 +796,7 @@ if HOT_INPUT:
     _run_hot()
 
 ffmpeg_out  = creer_ffmpeg()
-shm_f, shm  = ouvrir_shm()
+reader      = ouvrir_shm()
 last_index  = 0
 win_cnt     = 0
 win_start   = time.time()   # fps sur fenêtre glissante (~1s), pas une moyenne cumulée
@@ -842,9 +808,9 @@ while True:
     # Reconnexion après Bus error
     if bus_error.is_set():
         bus_error.clear()
-        fermer_shm(shm_f, shm)
+        fermer_shm(reader)
         time.sleep(2)
-        shm_f, shm = ouvrir_shm()
+        reader = ouvrir_shm()
         last_index = 0
         continue
 
@@ -856,9 +822,9 @@ while True:
         try: ffmpeg_out.terminate()
         except Exception: pass
         time.sleep(0.3)
-        fermer_shm(shm_f, shm)
+        fermer_shm(reader)
         ffmpeg_out = creer_ffmpeg()
-        shm_f, shm = ouvrir_shm()
+        reader = ouvrir_shm()
         last_index = 0
         continue
 
@@ -871,7 +837,7 @@ while True:
         diag_win  = time.time()
 
     try:
-        frame_index, ts, v_mts = struct.unpack("QQQ", shm[0:24])
+        got = reader.get_latest()
 
         if ffmpeg_out.poll() is not None:
             print("FFmpeg arrêté, redémarrage...")
@@ -879,18 +845,16 @@ while True:
             time.sleep(1)
             ffmpeg_out = creer_ffmpeg()
 
-        if frame_index > last_index:
+        if got is not None and got[0] > last_index:
+            frame_index = got[0]
             diag_seen += frame_index - last_index   # frames PRODUITES depuis la dernière lecture
-            age_us = (time.time_ns() - ts) // 1000
+            age_us = (bobimxl.now_tai() - reader.last_write_time()) // 1000
             if age_us < 80000:
                 lat_in.push(age_us / 1000.0)
-                slot   = frame_index % RING_SIZE
-                offset = HEADER_SIZE + slot * FRAME_SIZE
-                frame_bytes = memoryview(shm)[offset:offset + FRAME_SIZE]
                 try:
-                    ffmpeg_out.stdin.write(frame_bytes)
+                    ffmpeg_out.stdin.write(got[2])    # grain = trame planar (vue numpy, zéro-copie)
                     ffmpeg_out.stdin.flush()
-                    _sync_v_mts[0] = v_mts            # playhead vidéo (capture) → suivi par l'audio
+                    _sync_v_mts[0] = reader.last_write_time()   # playhead vidéo (TAI) → suivi audio
                     win_cnt += 1
                     diag_pushed += 1
                     _el = time.time() - win_start
@@ -909,7 +873,7 @@ while True:
 
     except Exception as e:
         print(f"Erreur ({{type(e).__name__}}): {{e}}, reconnexion...")
-        fermer_shm(shm_f, shm)
+        fermer_shm(reader)
         time.sleep(2)
-        shm_f, shm = ouvrir_shm()
+        reader = ouvrir_shm()
         last_index = 0
