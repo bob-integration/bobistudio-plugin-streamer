@@ -92,14 +92,14 @@ def _detect_dims():
 _restart_signal = threading.Event()
 VCODEC = {{"h264": "libx264", "h265": "libx265"}}.get(VIDEO_CFG.get("codec", "h264"), "libx264")
 
-# ─── Format audio (PCM L24 / 48kHz / 8ch) — identique au sender 2110-30 ──
+# ─── Format audio — MXL : flux continu float32 par-canal (48kHz / 8ch) ──
+# Migration MXL Phase 3 : l'entrée audio n'est plus un ring shm s24be mais un FLUX MXL de samples
+# float32 (bobimxl.AudioReader). On alimente ffmpeg en `-f f32le` ; le ré-aiguillage de canaux =
+# sélection de colonnes numpy. (L'ancien ring shm/s24be a été retiré.)
 A_SAMPLE_RATE = 48000
 A_CHANNELS    = 8
-A_BYTES_PER_SAMPLE = 3
-A_CHUNK_SIZE  = (A_SAMPLE_RATE // 1000) * A_CHANNELS * A_BYTES_PER_SAMPLE  # 1152 (1 ms)
-A_HEADER_SIZE = 64
-A_RING_SIZE   = CONFIG.get("shm_audio_ring", 100)
-A_TOTAL_SIZE  = A_HEADER_SIZE + A_RING_SIZE * A_CHUNK_SIZE
+A_BYTES_PER_SAMPLE = 4   # float32 (was 3 = s24be)
+A_BLOCK       = A_SAMPLE_RATE // 1000   # 48 samples = 1 ms (granularité de lecture gapless)
 AUDIO_FIFO    = "/tmp/wudp_audio.raw"
 AUDIO_ENABLED = bool(AUDIO_CFG.get("enabled")) and bool(AUDIO_SHM)
 
@@ -148,23 +148,11 @@ A_OUT_CHUNK  = (A_SAMPLE_RATE // 1000) * OUT_CHANNELS * A_BYTES_PER_SAMPLE
 _amap_lock = threading.Lock()
 _amap = {{"slot_src": _flatten_channels(_INIT_TRACKS)}}  # slot_src[k] = canal source du slot k
 
-def _remap(buf, idx):
-    """Ré-aiguille les canaux : entrée 8ch interleave s24be → sortie len(idx)ch.
-    idx[k] = canal source (0..7) écrit dans le slot de sortie k. Identité si numpy
-    absent et idx == range(8)."""
-    fr = A_CHANNELS * A_BYTES_PER_SAMPLE
-    if _np is not None:
-        a = _np.frombuffer(buf, dtype=_np.uint8).reshape(-1, A_CHANNELS, A_BYTES_PER_SAMPLE)
-        return a[:, idx, :].tobytes()
-    n = len(buf) // fr
-    out = bytearray(n * len(idx) * A_BYTES_PER_SAMPLE)
-    op = 0
-    for f in range(n):
-        b = f * fr
-        for s in idx:
-            ip = b + s * A_BYTES_PER_SAMPLE
-            out[op:op + A_BYTES_PER_SAMPLE] = buf[ip:ip + A_BYTES_PER_SAMPLE]; op += A_BYTES_PER_SAMPLE
-    return bytes(out)
+def _remap(arr, idx):
+    """Ré-aiguille les canaux d'un bloc float32 (n, A_CHANNELS) → octets f32le (n, len(idx)).
+    idx[k] = canal source (0..7) écrit dans le slot de sortie k. `arr` = vue numpy float32 issue
+    de bobimxl.AudioReader (déjà par-canal) → simple sélection de colonnes."""
+    return _np.ascontiguousarray(arr[:, idx], dtype=_np.float32).tobytes()
 
 # ─── Latence : âge du frame consommé (rolling avg sur 30 frames) ──
 class RollingMs:
@@ -428,7 +416,7 @@ def creer_ffmpeg():
 
     if AUDIO_ENABLED:
         cmd += ["-thread_queue_size", "512",
-                "-f", "s24be", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS),
+                "-f", "f32le", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS),
                 "-i", AUDIO_FIFO]
         filters, amaps, acodecs, ts_sel, webrtc_sel = _audio_plan(a_delay_ms=a_delay_ms)
         # Filtre vidéo dans le même filter_complex que l'audio → on mappe [vout].
@@ -464,18 +452,6 @@ def creer_ffmpeg():
 # n'est jamais bloquée, même si la source audio est absente/muette.
 SILENCE = bytes(A_OUT_CHUNK)   # 1 ms de silence à la largeur de SORTIE (OUT_CHANNELS)
 
-def _open_audio_shm():
-    shm_path = f"/dev/shm/{{AUDIO_SHM}}"
-    try:
-        if not AUDIO_SHM or not os.path.exists(shm_path) or os.path.getsize(shm_path) < A_TOTAL_SIZE:
-            return None, None
-        af = open(shm_path, "r+b")
-        shm = mmap.mmap(af.fileno(), A_TOTAL_SIZE)
-        _ = shm[0:24]
-        return af, shm
-    except Exception:
-        return None, None
-
 def audio_feeder():
     try:
         if not os.path.exists(AUDIO_FIFO):
@@ -491,63 +467,61 @@ def audio_feeder():
         print("audio fifo connecté à ffmpeg")
         # Borne la capacité du fifo audio à ~120 ms (par canaux de sortie) : pendant le pic CPU de
         # démarrage de l'encodeur, ffmpeg lit le fifo en retard → l'audio s'y empile → transitoire de
-        # retard. Le défaut OS (~64 Ko→1 Mo) = des centaines de ms ; ~120 ms suffit, et le blocage
-        # (write bloquant + fifo borné) crée un BACKPRESSURE qui limite ce que ffmpeg ingère (mesuré
-        # meilleur que le non-bloquant+drop, le tampon problématique étant interne à ffmpeg).
-        # F_SETPIPE_SZ=1031 (min 4 Ko, plafond pipe-max-size).
+        # retard. Le blocage (write bloquant + fifo borné) crée un BACKPRESSURE qui limite ce que
+        # ffmpeg ingère. F_SETPIPE_SZ=1031 (min 4 Ko). NB : f32le = 4 o/sample (1,33× le s24be).
         try:
             import fcntl
             _fsz = max(4096, int(0.12 * OUT_CHANNELS * A_SAMPLE_RATE * A_BYTES_PER_SAMPLE))
             fcntl.fcntl(fifo.fileno(), 1031, _fsz)
         except Exception:
             pass
-        # PAS de lead-in de silence : il décalait l'audio en retard de sa durée (200 ms auparavant).
-        # Le `holding` ayant été retiré (cf. 0.7.1), le feeder ouvre le shm audio dès la 1ère itération
-        # et écrit l'audio RÉEL → ffmpeg obtient sa 1ère frame et configure le filtergraph [1:a] sans
-        # amorce (validé au banc). Si le shm audio tarde, la branche silence ci-dessous prend le relais.
-        af = shm = None
-        last_index = 0
-        last_shm_try = 0.0
-        sil_start = time.monotonic()
-        sil_written = 0
+        # Entrée audio = FLUX MXL de samples float32 (bobimxl.AudioReader), lu GAPLESS : on suit une
+        # position `pos` (index sample) qui démarre à head et avance par blocs de 1 ms. Décrochage
+        # (samples tombés de l'anneau) → resync sur head. Si pas de samples frais : SILENCE cadencé
+        # (jamais starver ffmpeg → la vidéo continue). Latence = (now_tai − lastWriteTime).
+        ar = None; pos = None
+        last_ar_try = 0.0
+        sil_start = time.monotonic(); sil_written = 0
         try:
             while True:
                 if bus_error.is_set():
                     break
-                if shm is None and (time.monotonic() - last_shm_try) > 1.0:
-                    last_shm_try = time.monotonic()
-                    af, shm = _open_audio_shm()
-                    last_index = 0
+                if ar is None and (time.monotonic() - last_ar_try) > 1.0:
+                    last_ar_try = time.monotonic()
+                    try: ar = bobimxl.AudioReader(inst, AUDIO_SHM)
+                    except Exception: ar = None
+                    pos = None
                 wrote_real = False
-                if shm is not None:
+                if ar is not None:
                     try:
-                        ci, ts_a, a_mts = struct.unpack("QQQ", shm[0:24])
+                        head = ar.head_index()
                     except Exception:
-                        shm = None
-                        ci = 0
-                    if shm is not None and ci > last_index:
-                        # Émet les nouveaux chunks dans l'ordre. Gros retard shm (> ring) → saut direct
-                        # au plus récent. Écriture BLOQUANTE + fifo borné (cf. ouverture) → le
-                        # backpressure limite ce que ffmpeg ingère pendant le pic de démarrage.
-                        n = ci - last_index
-                        if n > A_RING_SIZE:
-                            last_index = ci - 1; n = 1
-                        buf = bytearray()
-                        for j in range(ci - n + 1, ci + 1):
-                            off = A_HEADER_SIZE + (j % A_RING_SIZE) * A_CHUNK_SIZE
-                            buf += memoryview(shm)[off:off + A_CHUNK_SIZE]
-                        last_index = ci
+                        try: ar.close()
+                        except Exception: pass
+                        ar = None; head = bobimxl.MXL_UNDEFINED_INDEX
+                    if ar is not None and head != bobimxl.MXL_UNDEFINED_INDEX:
+                        if pos is None:
+                            pos = head
                         with _amap_lock:
                             idx = list(_amap["slot_src"])
-                        fifo.write(_remap(bytes(buf), idx)); fifo.flush()  # BrokenPipe → handler externe
-                        age_ms = (time.time_ns() - ts_a) / 1e6   # âge du chunk consommé
-                        if 0 <= age_ms < 5000: lat_audio.push(age_ms)
-                        sil_start = time.monotonic(); sil_written = 0
-                        wrote_real = True
+                        guard = 0
+                        while pos <= head and guard < 512:
+                            r = ar.read_from(pos, A_BLOCK)
+                            if r is None:
+                                if pos < head:      # samples tombés de l'anneau → resync au plus récent
+                                    pos = head; continue
+                                break               # head pas encore complet → on attend
+                            fifo.write(_remap(r, idx))
+                            pos += A_BLOCK; wrote_real = True; guard += 1
+                        if wrote_real:
+                            fifo.flush()            # BrokenPipe → handler externe
+                            lat = (bobimxl.now_tai() - ar.last_write_time()) / 1e6
+                            if 0 <= lat < 5000: lat_audio.push(lat)
+                            sil_start = time.monotonic(); sil_written = 0
                 if wrote_real:
                     time.sleep(0.0005)
                 else:
-                    # Pas de chunk frais — shm ABSENT *ou* ci figé (source muette) : silence cadencé
+                    # Pas de samples frais — flux ABSENT *ou* source muette : silence cadencé
                     # (~temps réel) pour ne JAMAIS starver ffmpeg → la vidéo continue quoi qu'il arrive.
                     due = int((time.monotonic() - sil_start) * 1000)
                     guard = 0
@@ -560,7 +534,7 @@ def audio_feeder():
         except Exception as e:
             print(f"audio feeder erreur : {{e}}")
         finally:
-            for c in (fifo, shm, af):
+            for c in (fifo, ar):
                 try:
                     if c: c.close()
                 except Exception: pass
