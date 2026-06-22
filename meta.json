@@ -1,7 +1,10 @@
 {
-  "version": "0.9.0",
+  "version": "0.9.1",
   "date": "2026-06-22",
   "changes": {
+    "Ménage (0.9.1)": [
+      "Ménage : commentaire d'en-tête à jour (audio sur le bus MXL). Aucun changement de comportement."
+    ],
     "Bascule audio MXL (0.9.0)": [
       "Migration MXL Phase 3 : l'entrée audio n'est plus un ring shm s24be mais un FLUX MXL de samples float32 (bobimxl.AudioReader, lecture gapless read_from). Alimente ffmpeg en -f f32le. REBUILD IMAGE REQUIS (bobimxl)."
     ],

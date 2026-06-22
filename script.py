@@ -5,7 +5,7 @@
 
 import mmap, struct, time, subprocess, threading, json, signal, os, math
 from collections import deque
-import bobimxl   # migration MXL Phase 1 : entrée VIDÉO via Reader (audio = legacy mmap, différé)
+import bobimxl   # migration MXL : entrée vidéo (Reader) + audio (AudioReader gapless) — Phases 1/3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ─── Config injectée (contrat plugin) ───────────────────────────────
