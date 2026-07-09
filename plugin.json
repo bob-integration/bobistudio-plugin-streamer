@@ -74,5 +74,33 @@
       "/input",
       "/audiomap"
     ]
-  }
+  },
+  "actions": [
+    {
+      "id": "input",
+      "label": "Re-pointer la source vidéo (mode moniteur)",
+      "endpoint": "/input",
+      "params": [
+        {
+          "key": "shm",
+          "label": "Flux vidéo (shm)",
+          "type": "text",
+          "options_from": "inputs"
+        }
+      ],
+      "feedback": {
+        "state": "shm",
+        "value_from": "shm"
+      }
+    }
+  ],
+  "state": [
+    {
+      "id": "shm",
+      "label": "Source vidéo (shm)",
+      "endpoint": "/",
+      "path": "shm",
+      "type": "text"
+    }
+  ]
 }
