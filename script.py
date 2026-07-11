@@ -28,6 +28,20 @@ AUDIO_CFG    = CONFIG.get("audio") or {{}}
 DESTINATIONS = CONFIG.get("destinations") or []
 HOT_INPUT    = _as_bool(CONFIG.get("hot_input"))   # mode moniteur : source re-câblable à chaud (dims FIXES)
 
+# ── MODE TRANCHE (chantier latence sous-trame, patch mxl-planar-slices) ──────────────
+# slice_mode=true → la boucle vidéo (non-hot) suit le grain de TÊTE via get_slice (réveil à
+# chaque commit partiel du producteur) et alimente le pipe ffmpeg PAR BANDES au fil de leur
+# arrivée. Un pipe est un FLUX : l'encodeur reçoit ainsi la trame complète au moment où la
+# DERNIÈRE bande arrive au lieu de ~+1 période d'attente de grain complet (~18 ms glass-to-
+# glass en moins — chemin du monitoring WebRTC). ⚠ Le format rawvideo attendu par ffmpeg est
+# PLANAR (yuv420p/yuv422p… : Y complet PUIS U complet PUIS V complet) → on ne peut PAS écrire
+# « bande Y+U+V » interleavé : on streame le plan Y par bandes (1/2 des octets en 422, 2/3 en
+# 420), puis U et V d'un bloc à la dernière tranche (par convention k tranches ⇔ lignes
+# [0, k·slice_height) valides sur les TROIS plans → U/V sont complets quand Y l'est).
+# slice_mode absent/False → chemin historique STRICTEMENT identique (octet-identique).
+SLICE_MODE  = _as_bool(CONFIG.get("slice_mode", False)) and not HOT_INPUT
+SLICE_LINES = max(1, int(CONFIG.get("slice_lines") or 36))   # informatif — le pas vient du grain source
+
 SHM_PATH = f"/dev/shm/{{SHM_NAME}}"
 inst = bobimxl.Instance()   # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl) — flux vidéo d'entrée
 # ── Sémantique format : le format CONFIGURÉ est la SORTIE souhaitée — TOUJOURS honorée,
@@ -187,7 +201,7 @@ metrics = {{"fps": 0.0, "in_width": 0, "in_height": 0, "in_chroma": IN_CHROMA, "
             "out_width": OUT_WIDTH, "out_height": OUT_HEIGHT, "out_fps": OUT_FPS,
             "in_fps_seen": 0.0, "pushed_fps": 0.0, "dropped_stale_fps": 0.0,
             "inputs_latency_ms": {{}}, "out_bitrate_kbps": 0.0, "destinations": [],
-            "av_offset_ms": 0}}
+            "av_offset_ms": 0, "slice_mode": SLICE_MODE}}
 
 # ─── Instrumentation : tail du stderr ffmpeg (diagnostic backpressure encode/RTSP) ──
 ffmpeg_log = []
@@ -559,6 +573,22 @@ def fermer_shm(reader):
     try: reader.close()
     except Exception: pass
 
+def _gc_domain():
+    """GC ENTRE close et reopen (motif pyramide / moteur tx_reopen_if_stale) : sans GC un flux
+    recréé sous le même nom reste résolvable vers l'ORPHELIN périmé → le reopen retombe dessus
+    et la boucle gèle en silence (mesuré côté pyramide : 40 min de gel après recréation)."""
+    try: inst.garbage_collect()
+    except Exception: pass
+
+def _neutral_tail(a, b, y_sz):
+    """MODE TRANCHE — octets NEUTRES (noir) pour TERMINER une trame commencée dans le pipe,
+    intervalle [a, b) : 0x10 sur le plan Y, 0x80 sur la chroma. Secours ULTIME quand ni le
+    grain courant ni le précédent ne sont lisibles (producteur mort mi-trame) — une trame
+    entamée DOIT être finie, sinon l'encodeur se désynchronise sur tout le flux. Exact en
+    8 bits ; approximation visuellement acceptable en 10/12 bits (une trame de secours)."""
+    ny = max(0, min(b, y_sz) - a)
+    return b"\x10" * ny + b"\x80" * max(0, b - a - ny)
+
 # ─── Mode hot-input (moniteur) : change de source sans redéployer ────────────
 # La boucle lit une source courante muable (POST :8082/input {{shm}}), rouvre le
 # mmap quand elle change, et alimente ffmpeg à cadence FPS (frame noire si pas
@@ -778,11 +808,20 @@ win_start   = time.time()   # fps sur fenêtre glissante (~1s), pas une moyenne 
 diag_seen = diag_pushed = diag_stale = 0
 diag_win  = time.time()
 
+# MODE TRANCHE actif : source PROGRESSIVE uniquement (l'entrelacé garde le chemin historique
+# grain-complet — bwdif consomme des trames entières et l'amont committe par champs). Un flux
+# amont NON tranché dégénère proprement dans la même boucle : totalSlices=1 → get_slice(h, 1)
+# n'aboutit qu'au commit final = attente du grain complet, comportement historique.
+_slice_on = SLICE_MODE and IN_SCAN != "i"
+if _slice_on:
+    print(f"mode tranche actif (slice_lines={{SLICE_LINES}} informatif — le pas vient du grain source)")
+
 while True:
     # Reconnexion après Bus error
     if bus_error.is_set():
         bus_error.clear()
         fermer_shm(reader)
+        _gc_domain()          # GC entre close et reopen (flux recréé sous le même nom)
         time.sleep(2)
         reader = ouvrir_shm()
         last_index = 0
@@ -797,6 +836,7 @@ while True:
         except Exception: pass
         time.sleep(0.3)
         fermer_shm(reader)
+        _gc_domain()          # GC entre close et reopen (flux recréé sous le même nom)
         ffmpeg_out = creer_ffmpeg()
         reader = ouvrir_shm()
         last_index = 0
@@ -811,6 +851,97 @@ while True:
         diag_win  = time.time()
 
     try:
+        if _slice_on:
+            # ─── MODE TRANCHE : suivre le grain de TÊTE et écrire le pipe PAR BANDES ───
+            # Ordre du pipe rawvideo planar = Y complet PUIS U PUIS V : le plan Y est streamé
+            # par bandes au fil des commits partiels du producteur, puis U+V d'un bloc à la
+            # dernière tranche (complets à ce moment-là — convention k tranches ⇔ lignes
+            # [0, k·slice_height) valides sur les 3 plans). ffmpeg vivant AVANT d'entamer une
+            # trame : une trame COMMENCÉE dans le pipe doit TOUJOURS être finie.
+            if ffmpeg_out.poll() is not None:
+                print("FFmpeg arrêté, redémarrage...")
+                _refresh_metrics(up=False)
+                time.sleep(1)
+                ffmpeg_out = creer_ffmpeg()
+            h = reader.head_index()
+            if h == bobimxl.MXL_UNDEFINED_INDEX or h <= last_index:
+                time.sleep(0.002)
+                continue
+            # 1ʳᵉ tranche du grain de tête ; tête à peine réclamée ou flux SANS le patch
+            # slices → repli get_latest (grain complet, boucle dégénérée sans attente).
+            got = reader.get_slice(h, 1, timeout_ns=2_000_000)
+            if got is None:
+                got = reader.get_latest()
+            if got is None or got[0] <= last_index:
+                time.sleep(0.002)
+                continue
+            idx, gi_s, buf = got
+            diag_seen += (idx - last_index) if last_index > 0 else 1
+            n_buf = len(buf)                          # trame planar complète (= écrit historique)
+            y_sz  = WIDTH * HEIGHT * _IN_DBPS         # plan Y complet, en octets
+            row   = WIDTH * _IN_DBPS                  # 1 ligne Y
+            total = max(1, int(gi_s.totalSlices or 1))
+            valid = max(1, int(gi_s.validSlices or 1))
+            islh  = max(1, HEIGHT // total)           # lignes Y par tranche (tranches égales)
+            # Budget d'attente TOTAL ≈ 1,5 période d'entrée : un producteur en retard ne
+            # bloque jamais l'encodeur au-delà d'une demi-trame après le nominal.
+            deadl = time.monotonic_ns() + int(1.5e9 / max(1, IN_FPS))
+            sent  = 0                                 # octets déjà écrits pour CETTE trame
+            try:
+                for j in range(1, total + 1):
+                    if j > valid:
+                        left = deadl - time.monotonic_ns()
+                        g = (reader.get_slice(idx, j, timeout_ns=max(1, left))
+                             if left > 0 else None)
+                        if g is not None:
+                            valid = max(j, int(g[1].validSlices or j))
+                        else:
+                            # TIMEOUT mi-trame → COMPLÉTER, JAMAIS laisser le pipe à moitié
+                            # de trame (l'encodeur se désynchroniserait sur tout le flux) :
+                            # le reste vient du dernier grain COMPLET (idx-1 — léger tearing
+                            # d'UNE image), sinon du noir neutre (secours ultime).
+                            gp = reader.get(idx - 1, timeout_ns=2_000_000) if idx > 0 else None
+                            src = gp[2] if (gp is not None and len(gp[2]) >= n_buf) else None
+                            if src is not None:
+                                if y_sz > sent:
+                                    ffmpeg_out.stdin.write(src[sent:y_sz])
+                                    sent = y_sz
+                                ffmpeg_out.stdin.write(src[sent:n_buf])
+                            else:
+                                ffmpeg_out.stdin.write(_neutral_tail(sent, n_buf, y_sz))
+                            sent = n_buf
+                            break
+                    # Tranche j dispo : delta du plan Y désormais calculable (vue zéro-copie).
+                    # À la DERNIÈRE tranche le grain est complet → fin du Y puis U et V d'un bloc.
+                    upto = y_sz if j == total else min(y_sz, j * islh * row)
+                    if upto > sent:
+                        ffmpeg_out.stdin.write(buf[sent:upto])
+                        sent = upto
+                    if j == total and n_buf > sent:
+                        ffmpeg_out.stdin.write(buf[sent:n_buf])
+                        sent = n_buf
+                ffmpeg_out.stdin.flush()
+                _sync_v_mts[0] = reader.last_write_time()   # playhead vidéo (TAI) → suivi audio
+                # Latence exposée = âge au COMPLÈTEMENT du grain (lastWriteTime = dernier commit) —
+                # les attentes get_slice (suivi du fil ≈ période) n'y entrent pas par construction.
+                age_us = (bobimxl.now_tai() - reader.last_write_time()) // 1000
+                if 0 <= age_us < 80000:
+                    lat_in.push(age_us / 1000.0)
+                win_cnt += 1
+                diag_pushed += 1
+                _el = time.time() - win_start
+                if _el >= 1.0:
+                    _refresh_metrics(fps=round(win_cnt / _el, 1), up=True)
+                    win_cnt = 0; win_start = time.time()
+            except BrokenPipeError:
+                # Pipe cassé (ffmpeg mort) : trame abandonnée SANS risque de désync — le
+                # nouveau process repart sur un pipe vierge, aligné sur une frontière de trame.
+                print("BrokenPipe, redémarrage FFmpeg...")
+                time.sleep(1)
+                ffmpeg_out = creer_ffmpeg()
+            last_index = idx
+            continue
+
         got = reader.get_latest()
 
         if ffmpeg_out.poll() is not None:
@@ -848,6 +979,7 @@ while True:
     except Exception as e:
         print(f"Erreur ({{type(e).__name__}}): {{e}}, reconnexion...")
         fermer_shm(reader)
+        _gc_domain()          # GC entre close et reopen (flux recréé sous le même nom)
         time.sleep(2)
         reader = ouvrir_shm()
         last_index = 0
