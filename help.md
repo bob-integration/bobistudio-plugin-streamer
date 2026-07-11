@@ -34,6 +34,14 @@ La source audio se câble via la page **Câbles** (port d'entrée audio séparé
 
 Dès qu'une destination WebRTC est active, un **lien client** peut être généré : page publique brandée lisible dans n'importe quel navigateur, sans compte.
 
+## Mode tranche (latence réduite)
+
+Sur une source publiée en mode tranche MXL (moteur 2110, traitements en tranche…), le streamer peut alimenter l'encodeur **au fil de l'arrivée des bandes** au lieu d'attendre l'image complète : la latence bout-en-bout (ex. monitoring WebRTC) baisse d'environ une image (~18 ms en 50p).
+
+- **Opt-in** : paramètre `slice_mode` (désactivé par défaut — comportement inchangé). Le réglage est conservé par l'éditeur Streams.
+- Source entrelacée ou flux amont non tranché → comportement classique automatique.
+- L'encodage, l'audio et les destinations ne changent pas.
+
 ## Notes
 
 - Une destination morte (`onfail=ignore`) ne coupe pas les autres
