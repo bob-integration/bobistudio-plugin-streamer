@@ -8,7 +8,7 @@
     "oklch": "0.77 0.06 50"
   },
   "deploy_order": 2,
-  "version": "0.10.0",
+  "version": "0.10.1",
   "runtime": "docker",
   "adapts_input": true,
   "image": "media",
@@ -101,6 +101,16 @@
       "endpoint": "/",
       "path": "shm",
       "type": "text"
+    }
+  ],
+  "config_schema": [
+    {
+      "key": "slice_mode",
+      "type": "checkbox",
+      "label": "Mode tranche (latence sous-image)",
+      "help": "Suit une source tranchée au grain de tête (bande par bande) pour traiter l'image plus tôt (latence sous-image). Source non tranchée ou mode désactivé (défaut) = comportement historique.",
+      "default": false,
+      "scope": "system"
     }
   ]
 }

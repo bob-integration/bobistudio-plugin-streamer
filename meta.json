@@ -1,7 +1,10 @@
 {
-  "version": "0.10.0",
-  "date": "2026-07-11",
+  "version": "0.10.1",
+  "date": "2026-07-12",
   "changes": {
+    "Réglages mode tranche (0.10.1)": [
+      "Exposition des réglages du mode tranche dans le panneau ⚙ Réglages et la palette (config_schema, scope system) : slice_mode. Schéma/UI seulement — aucun changement de comportement du script."
+    ],
     "Mode tranche MXL (0.10.0)": [
       "MODE TRANCHE (opt-in `slice_mode`, défaut false = chemin historique octet-identique) : la boucle vidéo suit le grain de TÊTE via get_slice (patch mxl-planar-slices, réveil à chaque commit partiel du producteur) et alimente le pipe ffmpeg PAR BANDES au fil de leur arrivée au lieu d'attendre le grain complet — l'encodeur reçoit la trame complète au moment où la DERNIÈRE bande arrive (≈ −18 ms de latence glass-to-glass, chemin du monitoring WebRTC). Le pipe rawvideo étant PLANAR (Y complet puis U puis V), le plan Y est streamé par bandes (1/2 des octets en 422, 2/3 en 420) puis U+V d'un bloc à la dernière tranche. Budget d'attente 1,5×période ; timeout mi-trame → complétion depuis le dernier grain COMPLET (idx−1, tearing d'UNE image) sinon noir neutre — une trame commencée dans le pipe est TOUJOURS finie (jamais de désync encodeur). Source entrelacée ou flux amont non tranché → dégénéré = comportement historique. `slice_lines` (36) informatif — le pas vient du grain source. Métriques :8080 : clé `slice_mode` ; latence = âge au complètement du grain (attentes get_slice exclues par construction). Audio, tee/destinations, mode moniteur (hot_input) : INCHANGÉS.",
       "Reconnexion : garbage_collect() du domaine MXL ENTRE close et reopen (motif pyramide/moteur) sur les 3 chemins (SIGBUS, injection de format, exception) — sans GC un flux recréé sous le même nom retombe sur l'orphelin périmé → gel permanent.",
