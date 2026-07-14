@@ -89,5 +89,6 @@
   "plugin.streamer.share_create": "+ Create a link",
   "plugin.streamer.save_deploy": "Save & deploy",
   "plugin.streamer.unavailable": "Encoder unavailable.",
-  "plugin.streamer.loading": "Loading…"
+  "plugin.streamer.loading": "Loading…",
+  "plugin.streamer.deinterlaced": "deinterlaced (bwdif)"
 }

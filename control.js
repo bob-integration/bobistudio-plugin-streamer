@@ -132,15 +132,20 @@ window.MXLPlugins.streamer = (function () {
     function signalHtml(c){
         const L=c.live||{}; const iw=L.in_width||0, ih=L.in_height||0;
         const ifps=(L.fps!=null&&L.fps>0)?Math.round(Number(L.fps)):0;
-        const inTxt=(iw&&ih?`${iw}×${ih}`:T('plugin.streamer.res_unknown'))+(ifps?` @${ifps}`:'');
+        // ENTRELACÉ : in_width/in_height sont les dims de TRAME (1920×1080i, jamais 540) et le
+        // balayage vient du flow_def MXL du producteur. La sortie, elle, est DÉSENTRELACÉE (bwdif).
+        const iscan=(L.in_scan==='i')?'i':'', ifo=L.in_field_order||'';
+        const inTxt=(iw&&ih?`${iw}×${ih}${iscan}`:T('plugin.streamer.res_unknown'))
+                    +(iscan&&ifo?` ${ifo}`:'')+(ifps?` @${ifps}`:'');
+        const deint=iscan?` <span style="color:var(--text-muted)">· ${esc(T('plugin.streamer.deinterlaced'))}</span>`:'';
         const ow=L.out_width||0, oh=L.out_height||0, ofps=L.out_fps||0;
-        if(!ow && !oh && !ofps) return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code> <span style="color:var(--text-muted)">· ${esc(T('plugin.streamer.out_same'))}</span>`;
+        if(!ow && !oh && !ofps) return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code>${deint} <span style="color:var(--text-muted)">· ${esc(T('plugin.streamer.out_same'))}</span>`;
         const outW=ow||iw, outH=oh||ih, outF=ofps||ifps;
         const outTxt=(outW&&outH?`${outW}×${outH}`:'?')+(outF?` @${outF}`:'');
         const scaleAdapt=ow&&oh&&iw&&ih&&(ow!==iw||oh!==ih), fpsAdapt=ofps&&ifps&&(ofps!==ifps);
         if(scaleAdapt||fpsAdapt){ const what=[scaleAdapt?T('plugin.streamer.resized'):null, fpsAdapt?T('plugin.streamer.resampled'):null].filter(Boolean).join(' + ');
-            return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code> <span style="color:var(--status-warning-fg)">→ ${esc(what)} ${esc(T('plugin.streamer.in_to'))}</span> <code>${esc(outTxt)}</code>`; }
-        return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code> <span style="color:var(--text-muted)">${esc(T('plugin.streamer.out_to'))} <code>${esc(outTxt)}</code> ${esc(T('plugin.streamer.out_identical'))}</span>`;
+            return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code>${deint} <span style="color:var(--status-warning-fg)">→ ${esc(what)} ${esc(T('plugin.streamer.in_to'))}</span> <code>${esc(outTxt)}</code>`; }
+        return `${T('plugin.streamer.signal_in')} <code>${esc(inTxt)}</code>${deint} <span style="color:var(--text-muted)">${esc(T('plugin.streamer.out_to'))} <code>${esc(outTxt)}</code> ${esc(T('plugin.streamer.out_identical'))}</span>`;
     }
     function latencyHtml(c){
         const L=(c.live&&c.live.inputs_latency_ms)||{}; const fmt=v=>(v==null?'—':v+' ms');

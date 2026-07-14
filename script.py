@@ -70,14 +70,28 @@ OUT_CHROMA  = str(VIDEO_CFG.get("chroma") or "422")
 OUT_CHROMA  = OUT_CHROMA if OUT_CHROMA in _CHROMA_DIV else "422"
 # Profondeur du shm d'ENTRÉE (8/10/12 bits). La SORTIE (encode h264/h265) reste 8 bits.
 BIT_DEPTH   = int(CONFIG.get("bit_depth") or 8)
-# Mode de balayage du shm d'ENTRÉE (porté hors-bande par le format du producteur). Une source
-# entrelacée est DÉSENTRELACÉE pour l'affichage (preview/encode progressif) : sans ça, peigne
-# sur les mouvements horizontaux. send_frame = 1 trame de sortie/trame d'entrée → conserve la
-# cadence trame (25 fps pour 1080i50), JAMAIS la cadence champ (50) qui doublerait le débit.
+# ── ENTRELACÉ NATIF (modèle SDK MXL) : 1 grain = 1 CHAMP (½ hauteur), cadence CHAMP ──────
+# La SOURCE DE VÉRITÉ est le flow_def du flux (reader.format() : `interlaced`, `field_order`,
+# `frame_height`, `frame_fps_num`) — PAS `CONFIG["scan"]`, qui peut être absent ou faux selon le
+# câblage (bug mesuré : mur 1080i50 → le streamer annonçait 1920×540 et n'encodait qu'UN champ
+# sur deux, image écrasée). CONFIG ne sert plus que de valeur d'attente avant détection.
+# WIDTH/HEIGHT = dims de TRAME (1920×1080) ; GRAIN_H/GRAIN_SIZE = dims/taille d'un CHAMP.
+# Chaîne d'encodage : on TISSE les 2 grains-champs en une trame pleine, puis bwdif la
+# DÉSENTRELACE (send_frame = 1 trame de sortie/trame d'entrée → cadence TRAME, 25 fps pour du
+# 1080i50, jamais la cadence champ qui doublerait le débit). La sortie est donc PROGRESSIVE :
+# c'est obligatoire pour WebRTC (H.264 entrelacé non supporté par les navigateurs) et sans
+# risque pour UDP/SRT (le peigne, lui, se verrait sur tout décodeur).
 IN_SCAN          = str(CONFIG.get("scan") or "p").strip().lower()
 IN_FIELD_ORDER   = str(CONFIG.get("field_order") or "").strip().lower()
-_DEINT_VF = ("bwdif=mode=send_frame:parity=" + ("1" if IN_FIELD_ORDER == "bff" else "0")) \
-            if IN_SCAN == "i" else ""
+IN_INTERLACED    = (IN_SCAN == "i")
+
+def _deint_vf():
+    """Filtre de désentrelacement courant (recalculé à chaque création de ffmpeg : le balayage
+    n'est connu qu'APRÈS détection du flow_def / re-câblage à chaud)."""
+    if not IN_INTERLACED:
+        return ""
+    return "bwdif=mode=send_frame:parity=" + ("1" if IN_FIELD_ORDER == "bff" else "0")
+
 _IN_DEEP    = BIT_DEPTH >= 10
 _IN_DBPS    = 2 if _IN_DEEP else 1                                 # octets/échantillon entrée
 _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
@@ -85,18 +99,82 @@ IN_PIX_FMT  = _PIX_FMT[IN_CHROMA] + _IN_SUF
 OUT_PIX_FMT = _PIX_FMT[OUT_CHROMA]
 _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]         # diviseurs chroma de l'ENTRÉE
 _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS   # octets/pixel d'entrée (incl. profondeur)
-FRAME_SIZE = int(WIDTH * HEIGHT * _IN_BPP)    # recalculé après _detect_dims (entrée réelle)
+FRAME_SIZE = int(WIDTH * HEIGHT * _IN_BPP)    # TRAME pleine (ce qu'on pousse à ffmpeg)
 TOTAL_SIZE = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
+GRAIN_H    = HEIGHT                            # hauteur d'un GRAIN (= ½ trame si entrelacé)
+GRAIN_SIZE = FRAME_SIZE                        # taille d'un GRAIN (= ½ trame si entrelacé)
+
+def _recalc_sizes():
+    """Recalcule tous les dérivés de (WIDTH, HEIGHT, IN_CHROMA, BIT_DEPTH, IN_INTERLACED).
+    WIDTH/HEIGHT sont TOUJOURS des dims de TRAME ; le GRAIN vaut ½ trame en entrelacé."""
+    global _IN_DEEP, _IN_DBPS, _IN_SUF, IN_PIX_FMT, _ICW, _ICH, _IN_BPP
+    global FRAME_SIZE, TOTAL_SIZE, GRAIN_H, GRAIN_SIZE
+    _IN_DEEP    = BIT_DEPTH >= 10
+    _IN_DBPS    = 2 if _IN_DEEP else 1
+    _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
+    IN_PIX_FMT  = _PIX_FMT[IN_CHROMA] + _IN_SUF
+    _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]
+    _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS
+    FRAME_SIZE  = int(WIDTH * HEIGHT * _IN_BPP)
+    TOTAL_SIZE  = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
+    GRAIN_H     = (HEIGHT // 2) if IN_INTERLACED else HEIGHT
+    GRAIN_SIZE  = int(WIDTH * GRAIN_H * _IN_BPP)
+
+def _field_planes():
+    """Plans d'un grain-CHAMP : [(taille_octets, octets_par_ligne)] pour Y, U, V."""
+    y_sz = WIDTH * GRAIN_H * _IN_DBPS
+    uv_w = WIDTH // _ICW
+    uv_sz = uv_w * (GRAIN_H // _ICH) * _IN_DBPS
+    return [(y_sz, WIDTH * _IN_DBPS), (uv_sz, uv_w * _IN_DBPS), (uv_sz, uv_w * _IN_DBPS)]
+
+def _weave_fields(first_b, second_b):
+    """Tisse 2 grains-champs en une TRAME planar pleine (ordre pipe : Y puis U puis V).
+    `first_b` = grain d'index PAIR (1er champ), `second_b` = index impair (2e champ).
+    tff → 1er champ = lignes PAIRES ; bff → 1er champ = lignes impaires. (Même convention que
+    le recorder et le moteur 2110 — la seule qui fait foi.)"""
+    bff = (IN_FIELD_ORDER == "bff")
+    out = bytearray(); off = 0
+    for (psz, rb) in _field_planes():
+        a = _np.frombuffer(first_b,  dtype=_np.uint8, count=psz, offset=off).reshape(-1, rb)
+        b = _np.frombuffer(second_b, dtype=_np.uint8, count=psz, offset=off).reshape(-1, rb)
+        fr = _np.empty((a.shape[0] * 2, rb), dtype=_np.uint8)
+        if bff:
+            fr[1::2] = a; fr[0::2] = b
+        else:
+            fr[0::2] = a; fr[1::2] = b
+        out += fr.tobytes(); off += psz
+    return bytes(out)
+
+def _apply_fmt(f):
+    """Applique un format lu d'un flow_def MXL (reader.format()) aux globales d'ENTRÉE.
+    `f["width"]/["height"]` sont les dims de GRAIN → on remonte aux dims de TRAME
+    (`frame_width`/`frame_height`) et on retient l'entrelacement + l'ordre de champ."""
+    global WIDTH, HEIGHT, IN_CHROMA, BIT_DEPTH, IN_INTERLACED, IN_SCAN, IN_FIELD_ORDER, IN_FPS
+    IN_INTERLACED = bool(f.get("interlaced"))
+    IN_SCAN       = "i" if IN_INTERLACED else "p"
+    IN_FIELD_ORDER = str(f.get("field_order") or ("tff" if IN_INTERLACED else "")).lower()
+    w = int(f.get("frame_width") or f.get("width") or WIDTH)
+    h = int(f.get("frame_height") or f.get("height") or HEIGHT)
+    if w > 0: WIDTH  = w - (w % 2)
+    if h > 0: HEIGHT = h - (h % 2)
+    ch = str(f.get("chroma") or IN_CHROMA)
+    IN_CHROMA = ch if ch in _CHROMA_DIV else IN_CHROMA
+    BIT_DEPTH = int(f.get("bit_depth") or BIT_DEPTH)
+    if IN_INTERLACED:
+        # cadence d'entrée déclarée à ffmpeg = cadence TRAME (on pousse des trames tissées)
+        fn = int(f.get("frame_fps_num") or 0); fd = int(f.get("frame_fps_den") or 1) or 1
+        if fn > 0: IN_FPS = max(1, int(round(fn / fd)))
+    _recalc_sizes()
 
 def _detect_dims():
-    """Résout (w, h, chroma, bit_depth) depuis le flow_def du flux d'entrée MXL (source de
-    vérité côté donnée). Attend que le flux existe. Remplace l'ancienne heuristique 16:9."""
+    """Résout le format d'ENTRÉE depuis le flow_def du flux MXL (source de vérité côté donnée),
+    entrelacement compris. Attend que le flux existe."""
     while True:
         try:
             r = bobimxl.Reader(inst, SHM_NAME)
             f = r.format(); r.close()
             if f:
-                return f["width"], f["height"], f["chroma"], f["bit_depth"]
+                return f
         except Exception:
             pass
         print(f"detect-dims: attente du flux MXL {{SHM_NAME}}…")
@@ -384,8 +462,9 @@ def _video_filter():
     moniteur cadence déjà à la sortie) ET si la sortie diffère de l'entrée. Chaîne vide si
     sortie == entrée → aucun coût ni recompression inutile."""
     parts = []
-    if _DEINT_VF:
-        parts.append(_DEINT_VF)          # désentrelacement AVANT scale (sinon peigne ré-échantillonné)
+    _dv = _deint_vf()
+    if _dv:
+        parts.append(_dv)                # désentrelacement AVANT scale (sinon peigne ré-échantillonné)
     if OUT_WIDTH and OUT_HEIGHT and (OUT_WIDTH != WIDTH or OUT_HEIGHT != HEIGHT):
         parts.append(f"scale={{OUT_WIDTH}}:{{OUT_HEIGHT}}:flags=bicubic")
     if (not HOT_INPUT) and OUT_FPS and OUT_FPS != IN_FPS:
@@ -630,30 +709,31 @@ class ControlHandler(BaseHTTPRequestHandler):
                 fmt = body.get("format")
                 if fmt and isinstance(fmt, dict):
                     global WIDTH, HEIGHT, BIT_DEPTH, IN_CHROMA
-                    global _IN_DEEP, _IN_DBPS, _IN_SUF, IN_PIX_FMT
-                    global _ICW, _ICH, _IN_BPP, FRAME_SIZE, TOTAL_SIZE
-                    new_w = int(fmt.get("width") or WIDTH)
-                    new_h = int(fmt.get("height") or HEIGHT)
+                    global IN_INTERLACED, IN_SCAN, IN_FIELD_ORDER
                     new_chroma = str(fmt.get("chroma") or IN_CHROMA)
-                    new_bd = int(fmt.get("bit_depth") or BIT_DEPTH)
                     if new_chroma not in _CHROMA_DIV:
                         new_chroma = IN_CHROMA
+                    # Format injecté par l'orchestrateur : `scan`/`field_order` optionnels. Les
+                    # dims annoncées sont des dims de TRAME (côté DB) ; le flow_def MXL reste
+                    # ré-arbitre à la réouverture du reader (cf. boucle : _apply_fmt(r.format())).
+                    _sc = str(fmt.get("scan") or ("i" if IN_INTERLACED else "p")).strip().lower()
+                    IN_INTERLACED  = _sc.startswith("i")
+                    IN_SCAN        = "i" if IN_INTERLACED else "p"
+                    IN_FIELD_ORDER = str(fmt.get("field_order")
+                                         or (IN_FIELD_ORDER or ("tff" if IN_INTERLACED else ""))).lower()
+                    new_w = int(fmt.get("width") or WIDTH)
+                    new_h = int(fmt.get("height") or HEIGHT)
                     if new_w > 0: WIDTH = new_w - (new_w % 2)
                     if new_h > 0: HEIGHT = new_h - (new_h % 2)
-                    BIT_DEPTH   = new_bd
+                    BIT_DEPTH   = int(fmt.get("bit_depth") or BIT_DEPTH)
                     IN_CHROMA   = new_chroma
-                    _IN_DEEP    = BIT_DEPTH >= 10
-                    _IN_DBPS    = 2 if _IN_DEEP else 1
-                    _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
-                    _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]
-                    _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS
-                    IN_PIX_FMT  = _PIX_FMT[IN_CHROMA] + _IN_SUF
-                    FRAME_SIZE  = int(WIDTH * HEIGHT * _IN_BPP)
-                    TOTAL_SIZE  = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
-                    metrics["in_width"]     = WIDTH
-                    metrics["in_height"]    = HEIGHT
-                    metrics["in_chroma"]    = IN_CHROMA
-                    metrics["in_bit_depth"] = BIT_DEPTH
+                    _recalc_sizes()
+                    metrics["in_width"]       = WIDTH
+                    metrics["in_height"]      = HEIGHT
+                    metrics["in_chroma"]      = IN_CHROMA
+                    metrics["in_bit_depth"]   = BIT_DEPTH
+                    metrics["in_scan"]        = IN_SCAN
+                    metrics["in_field_order"] = IN_FIELD_ORDER
                     _restart_signal.set()
                 self._reply(200, {{"ok": True}})
                 return
@@ -698,6 +778,39 @@ if AUDIO_ENABLED or HOT_INPUT:
         target=lambda: HTTPServer(("0.0.0.0", 8082), ControlHandler).serve_forever(),
         daemon=True).start()
 
+def _hot_scan(r):
+    """Mode moniteur : lit le BALAYAGE de la source re-câblée dans son flow_def (le canvas
+    WIDTH/HEIGHT reste imposé par le déploiement). Renvoie True si le balayage a CHANGÉ
+    (→ ffmpeg à relancer : bwdif à activer/désactiver et cadence d'entrée à revoir)."""
+    global IN_INTERLACED, IN_SCAN, IN_FIELD_ORDER
+    try:
+        f = r.format()
+    except Exception:
+        f = None
+    if not f:
+        return False
+    il = bool(f.get("interlaced"))
+    fo = str(f.get("field_order") or ("tff" if il else "")).lower()
+    if il == IN_INTERLACED and fo == IN_FIELD_ORDER:
+        return False
+    IN_INTERLACED = il
+    IN_SCAN = "i" if il else "p"
+    IN_FIELD_ORDER = fo
+    _recalc_sizes()
+    metrics["in_scan"] = IN_SCAN
+    metrics["in_field_order"] = IN_FIELD_ORDER
+    print(f"hot-input: balayage source = {{IN_SCAN}} {{IN_FIELD_ORDER or '-'}} "
+          f"(grain {{WIDTH}}x{{GRAIN_H}})")
+    return True
+
+def _hot_restart(proc):
+    try: proc.stdin.close()
+    except Exception: pass
+    try: proc.terminate()
+    except Exception: pass
+    time.sleep(0.2)
+    return creer_ffmpeg()
+
 def _run_hot():
     global ffmpeg_out
     black = b"\x10" * (WIDTH * HEIGHT) + b"\x80" * ((WIDTH // _ICW) * (HEIGHT // _ICH) * 2)
@@ -727,22 +840,37 @@ def _run_hot():
             except Exception: pass
             r = _open_named(want)
             cur_name = want; last_index = 0; last_frame = None
+            if r is not None and _hot_scan(r):
+                ffmpeg_out = _hot_restart(ffmpeg_out)   # balayage changé → bwdif on/off
         elif r is None and want:
             r = _open_named(want)   # source pas encore prête : retente
-            if r is not None: last_index = 0
+            if r is not None:
+                last_index = 0
+                if _hot_scan(r):
+                    ffmpeg_out = _hot_restart(ffmpeg_out)
         if r is not None:
             try:
                 got = r.get_latest()
-                # Garde monitor : ne JAMAIS pousser un grain de taille ≠ canvas (FRAME_SIZE) à
-                # ffmpeg — un re-point (hot) vers une autre résolution sans redéploiement
-                # corromprait le flux. Trame ignorée jusqu'au redéploiement au bon format.
-                if got is not None and len(got[2]) == FRAME_SIZE:
+                # Garde monitor : ne JAMAIS pousser un grain de taille ≠ GRAIN_SIZE (canvas, ou
+                # ½ canvas si la source est ENTRELACÉE : 1 grain = 1 champ) — un re-point (hot)
+                # vers une autre résolution sans redéploiement corromprait le flux.
+                if got is not None and len(got[2]) == GRAIN_SIZE:
                     fi = got[0]
                     if fi != last_index:
                         # Production source : delta d'index (garde anti-reset → +1 au 1er coup).
                         diag_seen += (fi - last_index) if 0 < last_index < fi else 1
-                        last_frame = bytes(got[2])           # grain = trame planar complète
-                        last_index = fi
+                        if IN_INTERLACED:
+                            # Tisser les 2 grains-CHAMPS de la dernière trame complète.
+                            ff = (fi - 1) // 2
+                            g0 = r.get(2 * ff) if ff >= 0 else None
+                            g1 = r.get(2 * ff + 1) if ff >= 0 else None
+                            if (g0 is not None and g1 is not None
+                                    and len(g0[2]) == GRAIN_SIZE and len(g1[2]) == GRAIN_SIZE):
+                                last_frame = _weave_fields(bytes(g0[2]), bytes(g1[2]))
+                                last_index = 2 * ff + 1
+                        else:
+                            last_frame = bytes(got[2])       # grain = trame planar complète
+                            last_index = fi
                         age_us = (bobimxl.now_tai() - r.last_write_time()) // 1000
                         if 0 <= age_us < 5_000_000: lat_in.push(age_us / 1000.0)
             except Exception:
@@ -779,21 +907,18 @@ def _run_hot():
 # respecte un non-16:9 exact — cf. _detect_dims). En mode hot-input (moniteur) les
 # dimensions sont imposées (canvas fixe) → pas de détection.
 if not HOT_INPUT:
-    if WIDTH == 0 or HEIGHT == 0:
-        WIDTH, HEIGHT, IN_CHROMA, BIT_DEPTH = _detect_dims()
-        _IN_DEEP    = BIT_DEPTH >= 10
-        _IN_DBPS    = 2 if _IN_DEEP else 1
-        _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
-        _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]
-        _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS
-        IN_PIX_FMT  = _PIX_FMT[IN_CHROMA] + _IN_SUF
-        FRAME_SIZE  = int(WIDTH * HEIGHT * _IN_BPP)
-        TOTAL_SIZE  = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
-        print(f"dims entrée résolues: {{WIDTH}}x{{HEIGHT}} {{IN_CHROMA}} {{BIT_DEPTH}}bit")
+    # TOUJOURS résolu depuis le flow_def (et plus seulement quand la config est vide) : le
+    # balayage (entrelacé + ordre de champ) n'existe QUE là, et une config de sortie non nulle
+    # masquait la détection en faisant passer les dims de SORTIE pour les dims d'ENTRÉE.
+    _apply_fmt(_detect_dims())
+    print(f"dims entrée résolues: {{WIDTH}}x{{HEIGHT}}{{IN_SCAN}} {{IN_CHROMA}} {{BIT_DEPTH}}bit"
+          f" (grain {{WIDTH}}x{{GRAIN_H}} {{IN_FIELD_ORDER or '-'}})")
 
 # Signal reçu publié sur /metrics (dims d'entrée résolues : config ou auto-détectées).
+# in_width/in_height = dims de TRAME (1920×1080 pour du 1080i50, JAMAIS la ½ hauteur du champ).
 metrics["in_width"], metrics["in_height"] = WIDTH, HEIGHT
 metrics["in_chroma"], metrics["in_bit_depth"] = IN_CHROMA, BIT_DEPTH
+metrics["in_scan"], metrics["in_field_order"] = IN_SCAN, IN_FIELD_ORDER
 
 # Mode moniteur : boucle hot-input dédiée (ne retourne jamais).
 if HOT_INPUT:
@@ -940,6 +1065,45 @@ while True:
                 time.sleep(1)
                 ffmpeg_out = creer_ffmpeg()
             last_index = idx
+            continue
+
+        if IN_INTERLACED:
+            # ─── ENTRELACÉ NATIF : 1 grain = 1 CHAMP → TISSER la paire avant d'encoder ───
+            # On apparie les 2 grains-champs de la DERNIÈRE trame COMPLÈTE (index pair = 1er
+            # champ, même convention que le recorder / le moteur 2110), on pousse UNE trame
+            # pleine à ffmpeg (cadence TRAME), et bwdif désentrelace (cf. _deint_vf).
+            # Pousser le grain brut (l'ancien comportement) revenait à encoder UN champ sur
+            # deux comme une image de ½ hauteur : 1920×540 écrasé — le défaut signalé.
+            if ffmpeg_out.poll() is not None:
+                print("FFmpeg arrêté, redémarrage...")
+                _refresh_metrics(up=False); time.sleep(1); ffmpeg_out = creer_ffmpeg()
+            got = reader.get_latest()
+            if got is not None and len(got[2]) == GRAIN_SIZE and got[0] > last_index:
+                fi = (got[0] - 1) // 2                 # trame complète = champs 2·fi et 2·fi+1
+                if fi >= 0 and (2 * fi + 1) > last_index:
+                    g0 = reader.get(2 * fi); g1 = reader.get(2 * fi + 1)
+                    if (g0 is not None and g1 is not None
+                            and len(g0[2]) == GRAIN_SIZE and len(g1[2]) == GRAIN_SIZE):
+                        diag_seen += 1
+                        age_us = (bobimxl.now_tai() - reader.last_write_time()) // 1000
+                        if age_us < 80000:
+                            lat_in.push(age_us / 1000.0)
+                            try:
+                                ffmpeg_out.stdin.write(_weave_fields(bytes(g0[2]), bytes(g1[2])))
+                                ffmpeg_out.stdin.flush()
+                                _sync_v_mts[0] = reader.last_write_time()
+                                win_cnt += 1; diag_pushed += 1
+                                _el = time.time() - win_start
+                                if _el >= 1.0:
+                                    _refresh_metrics(fps=round(win_cnt / _el, 1), up=True)
+                                    win_cnt = 0; win_start = time.time()
+                            except BrokenPipeError:
+                                print("BrokenPipe, redémarrage FFmpeg...")
+                                time.sleep(1); ffmpeg_out = creer_ffmpeg()
+                        else:
+                            diag_stale += 1
+                        last_index = 2 * fi + 1
+            time.sleep(0.0005)
             continue
 
         got = reader.get_latest()

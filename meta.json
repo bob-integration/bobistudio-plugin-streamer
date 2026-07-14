@@ -1,7 +1,15 @@
 {
-  "version": "0.10.2",
-  "date": "2026-07-12",
+  "version": "0.11.0",
+  "date": "2026-07-14",
   "changes": {
+    "Sources ENTRELACÉES NATIVES (0.11.0)": [
+      "BUG (mesuré en prod, streamer 171 sur un mur multiview 1080i50) : le streamer annonçait 1920×540 et encodait UN CHAMP SUR DEUX comme une image de ½ hauteur (ffmpeg : « h264, yuv422p, 1920x540, 25 fps »). Cause : _detect_dims ne lisait que width/height/chroma/bit_depth de reader.format() — c'est-à-dire les dims de GRAIN (= CHAMP en entrelacé natif MXL) — et ignorait interlaced/frame_height/field_order ; le balayage venait de CONFIG['scan'], absent au câblage → chemin progressif, mode tranche actif, aucun désentrelacement.",
+      "FIX : le balayage et les dims viennent du FLOW_DEF MXL (source de vérité côté donnée), plus de CONFIG['scan'] : _apply_fmt() lit interlaced/field_order/frame_width/frame_height/frame_fps et pose WIDTH/HEIGHT = dims de TRAME (GRAIN_H/GRAIN_SIZE = le champ). La détection tourne DÉSORMAIS TOUJOURS (avant : seulement si video.width/height étaient nuls — une config de sortie non nulle masquait la détection).",
+      "Boucle vidéo : sur une source entrelacée, on APPARIE les 2 grains-champs de la dernière trame complète (index PAIR = 1er champ) et on les TISSE en une trame pleine (tff → lignes paires, bff → impaires ; convention unique du projet, cf. recorder/2110_io), poussée à ffmpeg à la cadence TRAME (25 pour du 1080i50). bwdif (send_frame, parité déduite du field_order) désentrelace → SORTIE PROGRESSIVE : obligatoire pour WebRTC (H.264 entrelacé non décodable par les navigateurs), sans risque pour UDP/SRT. Mode tranche automatiquement désactivé (le producteur committe par CHAMPS).",
+      "Mode moniteur (hot_input) : le balayage de la source re-câblée est relu dans son flow_def (_hot_scan) → tissage + relance de ffmpeg quand il change ; la garde de taille de grain compare désormais à GRAIN_SIZE (½ canvas en entrelacé) au lieu de rejeter silencieusement les grains-champs (écran noir).",
+      "Métriques :8080 : in_width/in_height = dims de TRAME (1920×1080, jamais 540) + nouvelles clés in_scan (p|i) et in_field_order. UI (page Streams) : « 1920×1080i tff @25 · désentrelacé (bwdif) ».",
+      "Banc nœud 30 (mur multiview 1080i50 champ-natif → streamer → UDP → PNG) : entrée 1920×1080 i tff, ffmpeg « rawvideo 1920x1080 → bwdif → h264 1920x1080 progressive 25 fps », image pleine et non écrasée. Mesuré, pas déduit."
+    ],
     "Masquage UI mode tranche (0.10.2)": [
       "Clés du mode tranche (slice_mode) marquées hidden:true dans le config_schema : plus rendues dans la palette ni le panneau ⚙ — pilotage par le réglage global Réglages → Vidéo « Mode tranche » (slice_mode_global). Les clés restent dans le schéma : coercion, déploiement et API inchangés."
     ],
