@@ -748,7 +748,9 @@ class ControlHandler(BaseHTTPRequestHandler):
     """Contrôle à chaud sur :8082.
     - POST /input    {{shm}}             → re-câble la source vidéo (mode moniteur HOT_INPUT)
     - POST /audiomap {{tracks:[…]}}      → ré-aiguille les canaux audio (forme figée) sans restart
+    - POST /log_level {{level}}           → verbosité du journal à chaud (debug|info|warning|error)
     - GET  /audiomap                     → mapping courant + forme
+    - GET  /state                        → état (source, audio, niveau de log courant)
     - GET  /                             → état source vidéo (compat moniteur)
     """
     def _read_json(self):
@@ -818,6 +820,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                 _amap["slot_src"] = _flatten_channels(tracks)
                 src = list(_amap["slot_src"])
             self._reply(200, {{"ok": True, "slot_src": src}})
+        elif self.path == "/log_level":
+            # Verbosité À CHAUD (pas de redéploiement) : instruction d'incident. Le niveau
+            # PERSISTANT reste le champ `log_level` du config_schema ; celui-ci est volatil.
+            ok = set_log_level(body.get("level") or body.get("log_level"))
+            self._reply(200 if ok else 400, {{"ok": ok, "log_level": LOG_LEVEL}})
         else:
             self._reply(404, {{"error": "not found"}})
 
@@ -826,17 +833,26 @@ class ControlHandler(BaseHTTPRequestHandler):
             with _amap_lock: src = list(_amap["slot_src"])
             self._reply(200, {{"slot_src": src, "widths": AUDIO_WIDTHS,
                               "channels": OUT_CHANNELS, "enabled": AUDIO_ENABLED}})
+        elif self.path == "/state":
+            with _hot_lock: shm = _hot_cur["shm"]
+            with _amap_lock: src = list(_amap["slot_src"])
+            self._reply(200, {{"shm": shm, "width": WIDTH, "height": HEIGHT,
+                              "audio_enabled": AUDIO_ENABLED, "slot_src": src,
+                              "hot_input": HOT_INPUT,
+                              "log_level": LOG_LEVEL,   # lisible en condition de macro
+                              "plugin_version": PLUGIN_VERSION}})
         else:
             with _hot_lock: shm = _hot_cur["shm"]
             self._reply(200, {{"shm": shm, "width": WIDTH, "height": HEIGHT}})
     def log_message(self, *a): pass
 
-# Le serveur de contrôle tourne dès qu'il y a quelque chose à piloter à chaud :
-# l'audio (remap canaux) en mode normal, et/ou la source vidéo en mode moniteur.
-if AUDIO_ENABLED or HOT_INPUT:
-    threading.Thread(
-        target=lambda: HTTPServer(("0.0.0.0", 8082), ControlHandler).serve_forever(),
-        daemon=True).start()
+# Le serveur de contrôle tourne TOUJOURS : même sans audio ni mode moniteur, il porte
+# /log_level (bascule de verbosité pendant un incident) et /state. Il ne coûte qu'un thread
+# oisif — auparavant il était conditionnel (AUDIO_ENABLED or HOT_INPUT) et un streamer
+# vidéo-seul était injoignable, donc muet aux macros.
+threading.Thread(
+    target=lambda: HTTPServer(("0.0.0.0", 8082), ControlHandler).serve_forever(),
+    daemon=True).start()
 
 def _hot_scan(r):
     """Mode moniteur : lit le BALAYAGE de la source re-câblée dans son flow_def (le canvas

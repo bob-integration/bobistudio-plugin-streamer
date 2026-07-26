@@ -8,7 +8,7 @@
     "oklch": "0.77 0.06 50"
   },
   "deploy_order": 2,
-  "version": "0.12.0",
+  "version": "0.13.0",
   "runtime": "docker",
   "adapts_input": true,
   "image": "media",
@@ -73,7 +73,12 @@
   "control": {
     "endpoints": [
       "/input",
-      "/audiomap"
+      "/audiomap",
+      "/state",
+      "/log_level"
+    ],
+    "read_endpoints": [
+      "/state"
     ]
   },
   "actions": [
@@ -93,6 +98,37 @@
         "state": "shm",
         "value_from": "shm"
       }
+    },
+    {
+      "id": "log_level",
+      "label": "Niveau de log (à chaud)",
+      "endpoint": "/log_level",
+      "params": [
+        {
+          "key": "level",
+          "label": "Niveau",
+          "type": "text",
+          "default": "info",
+          "options": [
+            {
+              "value": "debug",
+              "label": "Détaillé"
+            },
+            {
+              "value": "info",
+              "label": "Événements (défaut)"
+            },
+            {
+              "value": "warning",
+              "label": "Anomalies seules"
+            },
+            {
+              "value": "error",
+              "label": "Erreurs seules"
+            }
+          ]
+        }
+      ]
     }
   ],
   "state": [
@@ -140,5 +176,27 @@
       "default": "info",
       "scope": "user"
     }
-  ]
+  ],
+  "param_tree": {
+    "global_groups": [
+      {
+        "label": "Journal (diagnostic)",
+        "endpoint": "/log_level",
+        "fields": {
+          "level": {
+            "label": "Niveau de log",
+            "type": "enum",
+            "options": [
+              "debug",
+              "info",
+              "warning",
+              "error"
+            ],
+            "default": "info",
+            "path": "log_level"
+          }
+        }
+      }
+    ]
+  }
 }
