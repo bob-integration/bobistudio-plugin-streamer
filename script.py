@@ -15,6 +15,51 @@ CONFIG         = {config}
 HOSTNAME       = "{hostname}"
 PLUGIN_VERSION = "{plugin_version}"
 
+# ─── Niveau de log ─────────────────────────────────────────────────────────
+# `log_level` (config_schema du plugin, défaut « info ») filtre les impressions du script.
+# Le critère n'est PAS « verbeux vs silencieux » mais ÉVÉNEMENT vs MÉTRIQUE :
+#   debug   — le lance-flammes : par trame, par bande, décisions internes
+#   info    — ÉVÉNEMENTS rares et signifiants  ← DÉFAUT (toujours visible) : démarrage/
+#             arrêt, session ouverte/fermée, changement de format, reconnexion, repli sur
+#             un chemin dégradé, entrée qui apparaît/disparaît, rebascule.
+#   warning — anomalies et replis subis
+#   error   — échecs
+# RÈGLE 1 : après une panne, le journal PAR DÉFAUT doit permettre de RECONSTITUER
+#   l'histoire. Élever le niveau après coup ne récupère RIEN : ce qui n'a pas été écrit
+#   est perdu. On ne coupe donc pas l'information, on coupe la redondance.
+# RÈGLE 2 : une MÉTRIQUE PÉRIODIQUE (fps, compteurs) ne se journalise PAS — elle est déjà
+#   publiée sur :8080 et échantillonnée par l'orchestrateur. La journaliser duplique la
+#   mesure ET consomme la fenêtre de rétention (journal Docker non roté : le bruit purge
+#   les lignes utiles anciennes). Au mieux `debug`.
+# RÈGLE 3 : un événement qui peut partir EN RAFALE s'AGRÈGE sur une fenêtre et sort en UNE
+#   ligne périodique (« N frames lentes sur la dernière minute, pire … ») — le signal
+#   reste, le spam disparaît.
+# Réglable à chaud, sans redéployer, quand le plugin expose l'endpoint de contrôle :
+# POST :8082/log_level {{"level": "debug"}} (exposé aux macros via param_tree/actions).
+_LOG_ORDER = {{"debug": 10, "info": 20, "warning": 30, "error": 40}}
+LOG_LEVEL = str(CONFIG.get("log_level") or "info").strip().lower()
+if LOG_LEVEL not in _LOG_ORDER:
+    LOG_LEVEL = "info"
+_LOG_MIN = _LOG_ORDER[LOG_LEVEL]
+
+
+def log(msg, niveau="info"):
+    """Impression gatée par le niveau de log courant (défaut du message : « info »)."""
+    if _LOG_ORDER.get(niveau, 20) >= _LOG_MIN:
+        print(msg, flush=True)
+
+
+def set_log_level(niveau):
+    """Change le niveau à chaud. Renvoie True si le niveau est reconnu."""
+    global LOG_LEVEL, _LOG_MIN
+    lv = str(niveau or "").strip().lower()
+    if lv not in _LOG_ORDER:
+        return False
+    LOG_LEVEL, _LOG_MIN = lv, _LOG_ORDER[lv]
+    return True
+
+
+
 def _as_bool(v):
     # bool("False") == True : on parse explicitement les chaînes de CONFIG.
     if isinstance(v, str):
@@ -166,6 +211,13 @@ def _apply_fmt(f):
         if fn > 0: IN_FPS = max(1, int(round(fn / fd)))
     _recalc_sizes()
 
+# Anti-rafale des attentes (règle 3 « Niveau de log ») : ces boucles tournaient à 1 ligne/s
+# tant que la source manquait. On ne journalise que l'ENTRÉE dans l'état d'attente et le
+# RÉTABLISSEMENT — l'état courant reste lisible sur :8080.
+_wait_warned = [False]
+_open_warned = [False]
+
+
 def _detect_dims():
     """Résout le format d'ENTRÉE depuis le flow_def du flux MXL (source de vérité côté donnée),
     entrelacement compris. Attend que le flux existe."""
@@ -174,10 +226,15 @@ def _detect_dims():
             r = bobimxl.Reader(inst, SHM_NAME)
             f = r.format(); r.close()
             if f:
+                if _wait_warned[0]:
+                    _wait_warned[0] = False
+                    log(f"detect-dims: flux MXL {{SHM_NAME}} disponible", "info")
                 return f
         except Exception:
             pass
-        print(f"detect-dims: attente du flux MXL {{SHM_NAME}}…")
+        if not _wait_warned[0]:      # une seule ligne à l'ENTRÉE dans l'attente (pas 1/s)
+            _wait_warned[0] = True
+            log(f"detect-dims: attente du flux MXL {{SHM_NAME}}…", "warning")
         time.sleep(1)
 
 # Signale au main loop de fermer/rouvrir le shm et relancer ffmpeg (injection format à chaud).
@@ -342,7 +399,7 @@ def _refresh_metrics(fps=None, up=True):
 bus_error = threading.Event()
 
 def handle_sigbus(signum, frame):
-    print("SIGBUS reçu — SHM invalidé, reconnexion...")
+    log("SIGBUS reçu — SHM invalidé, reconnexion...", "warning")
     bus_error.set()
 
 signal.signal(signal.SIGBUS, handle_sigbus)
@@ -550,14 +607,14 @@ def audio_feeder():
         if not os.path.exists(AUDIO_FIFO):
             os.mkfifo(AUDIO_FIFO)
     except Exception as e:
-        print(f"audio fifo non créé : {{e}}")
+        log(f"audio fifo non créé : {{e}}", "warning")
         return
     while True:
         try:
             fifo = open(AUDIO_FIFO, "wb")   # rendez-vous : débloque quand ffmpeg ouvre la lecture
         except Exception as e:
-            print(f"audio fifo open échec : {{e}}"); time.sleep(1); continue
-        print("audio fifo connecté à ffmpeg")
+            log(f"audio fifo open échec : {{e}}", "warning"); time.sleep(1); continue
+        log("audio fifo connecté à ffmpeg", "info")
         # Borne la capacité du fifo audio à ~120 ms (par canaux de sortie) : pendant le pic CPU de
         # démarrage de l'encodeur, ffmpeg lit le fifo en retard → l'audio s'y empile → transitoire de
         # retard. Le blocage (write bloquant + fifo borné) crée un BACKPRESSURE qui limite ce que
@@ -623,9 +680,9 @@ def audio_feeder():
                     fifo.flush()
                     time.sleep(0.004)
         except (BrokenPipeError, ValueError):
-            print("audio fifo cassé (ffmpeg redémarré ?), reconnexion...")
+            log("audio fifo cassé (ffmpeg redémarré ?), reconnexion...", "warning")
         except Exception as e:
-            print(f"audio feeder erreur : {{e}}")
+            log(f"audio feeder erreur : {{e}}", "warning")
         finally:
             for c in (fifo, ar):
                 try:
@@ -642,10 +699,13 @@ def ouvrir_shm():
     while True:
         try:
             r = bobimxl.Reader(inst, SHM_NAME)
-            print(f"flux MXL ouvert : {{SHM_NAME}}")
+            log(f"flux MXL ouvert : {{SHM_NAME}}", "info")   # source qui apparaît = événement
+            _open_warned[0] = False
             return r
         except Exception as e:
-            print(f"flux MXL indisponible, attente... ({{e}})")
+            if not _open_warned[0]:  # une seule ligne par ÉPISODE d'indisponibilité (pas 1/s)
+                _open_warned[0] = True
+                log(f"flux MXL indisponible, attente... ({{e}})", "warning")
             time.sleep(1)
 
 def fermer_shm(reader):
@@ -799,8 +859,8 @@ def _hot_scan(r):
     _recalc_sizes()
     metrics["in_scan"] = IN_SCAN
     metrics["in_field_order"] = IN_FIELD_ORDER
-    print(f"hot-input: balayage source = {{IN_SCAN}} {{IN_FIELD_ORDER or '-'}} "
-          f"(grain {{WIDTH}}x{{GRAIN_H}})")
+    log(f"hot-input: balayage source = {{IN_SCAN}} {{IN_FIELD_ORDER or '-'}} "
+        f"(grain {{WIDTH}}x{{GRAIN_H}})", "info")
     return True
 
 def _hot_restart(proc):
@@ -824,7 +884,7 @@ def _run_hot():
     # dernière frame à cadence fixe, il ne jette JAMAIS pour péremption.
     diag_seen = diag_pushed = 0; diag_win = time.time()
     interval = 1.0 / FPS; next_t = time.time()
-    print(f"hot-input actif {{WIDTH}}x{{HEIGHT}}@{{FPS}} — source initiale {{_hot_cur['shm']!r}}")
+    log(f"hot-input actif {{WIDTH}}x{{HEIGHT}}@{{FPS}} — source initiale {{_hot_cur['shm']!r}}", "info")
     while True:
         if bus_error.is_set():
             bus_error.clear()
@@ -911,8 +971,8 @@ if not HOT_INPUT:
     # balayage (entrelacé + ordre de champ) n'existe QUE là, et une config de sortie non nulle
     # masquait la détection en faisant passer les dims de SORTIE pour les dims d'ENTRÉE.
     _apply_fmt(_detect_dims())
-    print(f"dims entrée résolues: {{WIDTH}}x{{HEIGHT}}{{IN_SCAN}} {{IN_CHROMA}} {{BIT_DEPTH}}bit"
-          f" (grain {{WIDTH}}x{{GRAIN_H}} {{IN_FIELD_ORDER or '-'}})")
+    log(f"dims entrée résolues: {{WIDTH}}x{{HEIGHT}}{{IN_SCAN}} {{IN_CHROMA}} {{BIT_DEPTH}}bit"
+        f" (grain {{WIDTH}}x{{GRAIN_H}} {{IN_FIELD_ORDER or '-'}})", "info")
 
 # Signal reçu publié sur /metrics (dims d'entrée résolues : config ou auto-détectées).
 # in_width/in_height = dims de TRAME (1920×1080 pour du 1080i50, JAMAIS la ½ hauteur du champ).
@@ -939,7 +999,7 @@ diag_win  = time.time()
 # n'aboutit qu'au commit final = attente du grain complet, comportement historique.
 _slice_on = SLICE_MODE and IN_SCAN != "i"
 if _slice_on:
-    print(f"mode tranche actif (slice_lines={{SLICE_LINES}} informatif — le pas vient du grain source)")
+    log(f"mode tranche actif (slice_lines={{SLICE_LINES}} informatif — le pas vient du grain source)", "info")
 
 while True:
     # Reconnexion après Bus error
@@ -984,7 +1044,7 @@ while True:
             # [0, k·slice_height) valides sur les 3 plans). ffmpeg vivant AVANT d'entamer une
             # trame : une trame COMMENCÉE dans le pipe doit TOUJOURS être finie.
             if ffmpeg_out.poll() is not None:
-                print("FFmpeg arrêté, redémarrage...")
+                log("FFmpeg arrêté, redémarrage...", "warning")
                 _refresh_metrics(up=False)
                 time.sleep(1)
                 ffmpeg_out = creer_ffmpeg()
@@ -1061,7 +1121,7 @@ while True:
             except BrokenPipeError:
                 # Pipe cassé (ffmpeg mort) : trame abandonnée SANS risque de désync — le
                 # nouveau process repart sur un pipe vierge, aligné sur une frontière de trame.
-                print("BrokenPipe, redémarrage FFmpeg...")
+                log("BrokenPipe, redémarrage FFmpeg...", "warning")
                 time.sleep(1)
                 ffmpeg_out = creer_ffmpeg()
             last_index = idx
@@ -1075,7 +1135,7 @@ while True:
             # Pousser le grain brut (l'ancien comportement) revenait à encoder UN champ sur
             # deux comme une image de ½ hauteur : 1920×540 écrasé — le défaut signalé.
             if ffmpeg_out.poll() is not None:
-                print("FFmpeg arrêté, redémarrage...")
+                log("FFmpeg arrêté, redémarrage...", "warning")
                 _refresh_metrics(up=False); time.sleep(1); ffmpeg_out = creer_ffmpeg()
             got = reader.get_latest()
             if got is not None and len(got[2]) == GRAIN_SIZE and got[0] > last_index:
@@ -1098,7 +1158,7 @@ while True:
                                     _refresh_metrics(fps=round(win_cnt / _el, 1), up=True)
                                     win_cnt = 0; win_start = time.time()
                             except BrokenPipeError:
-                                print("BrokenPipe, redémarrage FFmpeg...")
+                                log("BrokenPipe, redémarrage FFmpeg...", "warning")
                                 time.sleep(1); ffmpeg_out = creer_ffmpeg()
                         else:
                             diag_stale += 1
@@ -1109,7 +1169,7 @@ while True:
         got = reader.get_latest()
 
         if ffmpeg_out.poll() is not None:
-            print("FFmpeg arrêté, redémarrage...")
+            log("FFmpeg arrêté, redémarrage...", "warning")
             _refresh_metrics(up=False)
             time.sleep(1)
             ffmpeg_out = creer_ffmpeg()
@@ -1131,7 +1191,7 @@ while True:
                         _refresh_metrics(fps=round(win_cnt / _el, 1), up=True)
                         win_cnt = 0; win_start = time.time()
                 except BrokenPipeError:
-                    print("BrokenPipe, redémarrage FFmpeg...")
+                    log("BrokenPipe, redémarrage FFmpeg...", "warning")
                     time.sleep(1)
                     ffmpeg_out = creer_ffmpeg()
             else:
@@ -1141,7 +1201,7 @@ while True:
         time.sleep(0.00001)
 
     except Exception as e:
-        print(f"Erreur ({{type(e).__name__}}): {{e}}, reconnexion...")
+        log(f"Erreur ({{type(e).__name__}}): {{e}}, reconnexion...", "warning")
         fermer_shm(reader)
         _gc_domain()          # GC entre close et reopen (flux recréé sous le même nom)
         time.sleep(2)
