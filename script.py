@@ -649,6 +649,14 @@ def audio_feeder():
                         try: ar.close()
                         except Exception: pass
                         ar = None; head = bobimxl.MXL_UNDEFINED_INDEX
+                    if ar is not None and ar.reopen_if_head_stale(on_reopen=lambda s_, n: log(
+                            f"flux audio MXL {{AUDIO_SHM}} : lecteur PÉRIMÉ (head figé depuis "
+                            f"{{s_:.1f}} s), reconnexion (tentative {{n}})"
+                            + (" → Instance DÉDIÉE" if n >= 2 else ""), "warning")):
+                        # ⚠ un flux réellement MUET a un head qui AVANCE (le writer comble en
+                        # silence) : un head figé n'est pas du silence, c'est un décrochage.
+                        pos = None
+                        head = bobimxl.MXL_UNDEFINED_INDEX
                     if ar is not None and head != bobimxl.MXL_UNDEFINED_INDEX:
                         if pos is None:
                             pos = head
@@ -1017,6 +1025,8 @@ _slice_on = SLICE_MODE and IN_SCAN != "i"
 if _slice_on:
     log(f"mode tranche actif (slice_lines={{SLICE_LINES}} informatif — le pas vient du grain source)", "info")
 
+_last_stale_chk = time.monotonic()   # cadence du contrôle de péremption du Reader (cf. plus bas)
+
 while True:
     # Reconnexion après Bus error
     if bus_error.is_set():
@@ -1042,6 +1052,19 @@ while True:
         reader = ouvrir_shm()
         last_index = 0
         continue
+
+    # DÉCROCHAGE DE GÉNÉRATION (parade partagée bobimxl) : le producteur amont peut DÉTRUIRE puis
+    # RECRÉER son flux sous le MÊME nom (changement de source d'un slot RX, redéploiement…). Notre
+    # Reader reste alors collé à la génération MORTE, dont les grains restent LISIBLES : aucun
+    # SIGBUS, aucune exception — les deux reprises ci-dessus ne partent JAMAIS et la boucle tourne
+    # à vide pour toujours (got[0] figé sous last_index). Seul `lastWriteTime` le voit. ~2 Hz.
+    if time.monotonic() - _last_stale_chk >= 0.5:
+        _last_stale_chk = time.monotonic()
+        if reader.reopen_if_stale(on_reopen=lambda age, n: log(
+                f"flux MXL {{SHM_NAME}} : lecteur PÉRIMÉ (aucune écriture depuis {{age / 1000:.1f}} s), "
+                f"reconnexion (tentative {{n}})" + (" → Instance DÉDIÉE" if n >= 2 else ""),
+                "warning")):
+            last_index = 0      # génération neuve → les index repartent, ne pas les filtrer
 
     _eld = time.time() - diag_win
     if _eld >= 1.0:

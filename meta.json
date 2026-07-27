@@ -1,7 +1,13 @@
 {
-  "version": "0.13.0",
-  "date": "2026-07-26",
+  "version": "0.14.0",
+  "date": "2026-07-27",
   "changes": {
+    "Reconnexion d'un lecteur MXL DÉCROCHÉ — vidéo et audio (0.14.0)": [
+      "Un producteur amont qui DÉTRUIT puis RECRÉE son flux sous le MÊME nom (changement de source d'un slot RX 2110 — mtl_rx fusionne/dégroupe alors ses sessions —, redéploiement, reconfiguration) laissait le streamer collé à la génération MORTE. Piège : cette génération reste LISIBLE, index figé → ni SIGBUS ni exception, donc AUCUNE des deux reprises existantes ne partait. Résultat : `got[0] > last_index` jamais vrai, encodeur à vide, flux gelé pour toujours.",
+      "Vidéo : contrôle à ~2 Hz en tête de boucle via la parade partagée `bobimxl.Reader.reopen_if_stale()` (détection par now_tai − lastWriteTime, close → garbage_collect → réouverture, escalade sur Instance dédiée au 2e essai). `last_index` est remis à 0 : la génération neuve repart d'index bas et serait sinon filtrée.",
+      "Audio : `AudioReader.reopen_if_head_stale()` — les writers audio ne bumpent pas lastWriteTime, le signe est un head_index figé. ⚠ un flux réellement MUET a un head qui AVANCE (le writer comble en silence) : un head figé n'est donc pas du silence, c'est un décrochage. Le repli « silence cadencé » continue de protéger ffmpeg pendant la reconnexion.",
+      "Toute reconnexion est tracée (motif + n° de tentative). Requiert bobimxl ≥ celui poussé avec le script (parade `_StaleGuard`). Pendants : multiview 0.45.0, moteur 2110_io 0.65.0."
+    ],
     "Niveau de log réglable À CHAUD (0.13.0)": [
       "Endpoint POST /log_level {level} sur le contrôle :8082 : bascule la verbosité pendant un incident, sans redéployer ni couper la production. Une valeur hors debug|info|warning|error est REFUSÉE (HTTP 400, {ok:false}) — jamais un 200 silencieux.",
       "Niveau courant publié dans /state (et /state en lecture seule) : le niveau effectif se constate sans redéploiement et s'utilise en CONDITION de macro.",
