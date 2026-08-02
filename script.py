@@ -205,10 +205,26 @@ def _apply_fmt(f):
     ch = str(f.get("chroma") or IN_CHROMA)
     IN_CHROMA = ch if ch in _CHROMA_DIV else IN_CHROMA
     BIT_DEPTH = int(f.get("bit_depth") or BIT_DEPTH)
-    if IN_INTERLACED:
-        # cadence d'entrée déclarée à ffmpeg = cadence TRAME (on pousse des trames tissées)
-        fn = int(f.get("frame_fps_num") or 0); fd = int(f.get("frame_fps_den") or 1) or 1
-        if fn > 0: IN_FPS = max(1, int(round(fn / fd)))
+    # CADENCE D'ENTRÉE — lue dans TOUS les cas, progressif compris.
+    #
+    # ⚠ Cette lecture était conditionnée à `IN_INTERLACED`. En progressif, `IN_FPS` gardait donc
+    # son défaut de 25 quelle que soit la source. Conséquence pour une source 50p : ffmpeg était
+    # lancé avec `-r 25` (cf. `creer_ffmpeg`), et comme `OUT_FPS (50) != IN_FPS (25)`, un filtre
+    # `fps=50` s'ajoutait par-dessus — qui DUPLIQUE. Le streamer poussait bien 50 images
+    # DISTINCTES, ffmpeg les horodatait à 25 et en refabriquait le double : une image neuve sur
+    # deux était jetée. Mesuré le 2026-08-02 : 50,0 % de trames identiques à la précédente en
+    # sortie, sur x264 comme sur NVENC.
+    #
+    # Le défaut était MUET : `:8080 fps`, `in_fps_seen`, `pushed_fps`, `grain_rate` du flowDef et
+    # la cadence du .ts encodé annonçaient tous 50, et avaient tous raison séparément — aucun ne
+    # mesure le CONTENU NEUF. Il n'a été vu qu'à l'œil, sur une mire dont la barre se figeait.
+    #
+    # En entrelacé la cadence déclarée reste celle de la TRAME (on pousse des trames tissées),
+    # d'où la préférence donnée à `frame_fps_*` ; en progressif grain = trame, les deux coïncident.
+    fn = int(f.get("frame_fps_num") or f.get("fps_num") or 0)
+    fd = int(f.get("frame_fps_den") or f.get("fps_den") or 1) or 1
+    if fn > 0:
+        IN_FPS = max(1, int(round(fn / fd)))
     _recalc_sizes()
 
 # Anti-rafale des attentes (règle 3 « Niveau de log ») : ces boucles tournaient à 1 ligne/s

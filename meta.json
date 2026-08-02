@@ -1,7 +1,13 @@
 {
-  "version": "0.15.0",
+  "version": "0.16.0",
   "date": "2026-08-02",
   "changes": {
+    "Une source 50p n'est plus diffusée à 25 images neuves (0.16.0)": [
+      "Un streamer réglé à 50 fps produisait un flux à 50 trames/s dont UNE SUR DEUX était un doublon exact : la cadence était juste, le mouvement à moitié. Repéré à l'œil sur une mire (barre qui se fige, flashs manqués), confirmé par décodage — 50,0 % de trames identiques à la précédente, sur x264 comme sur NVENC.",
+      "Cause : `_apply_fmt` ne lisait la cadence du flowDef que si la source était ENTRELACÉE. En progressif, `IN_FPS` gardait son défaut de 25. ffmpeg était donc lancé avec `-r 25`, et comme la sortie visait 50, un filtre `fps=50` s'ajoutait par-dessus — qui duplique. Le streamer poussait pourtant 50 images distinctes ; ffmpeg les horodatait à 25 et en refabriquait le double.",
+      "La cadence est désormais lue dans TOUS les cas, depuis `frame_fps_*` (cadence TRAME, toujours présente au contrat de `Reader.format()`). L'entrelacé est inchangé : il pousse des trames tissées, donc la cadence trame est déjà la bonne.",
+      "⚠ Le défaut était MUET. `:8080 fps`, `in_fps_seen`, `pushed_fps`, le `grain_rate` du flowDef et la cadence du .ts encodé annonçaient tous 50 — et avaient tous raison séparément. Aucun compteur ne mesure le CONTENU NEUF par seconde ; l'instrumentation s'arrêtait juste avant l'endroit où l'information se perdait."
+    ],
     "Encodage matériel NVENC — un cœur libéré par flux (0.15.0)": [
       "L'encodage x264 d'un flux 1080p50 coûte 1,16 cœur ; le même en NVENC en coûte 0,22 (mesuré au banc sur Quadro P5000, même entrée, 20 s de contenu, ffmpeg -benchmark). Soit ≈ 0,95 cœur rendu par flux. À ne pas surestimer : le conteneur complet coûte ≈ 3 cœurs et l'encodeur n'en est qu'un tiers — la lecture MXL, la conversion de chroma et le tuyau ne bougent pas.",
       "Trois modes, réglés par `video.encoder`. `cpu` (défaut, comportement INCHANGÉ pour tous les streamers existants) · `nvenc` exige le matériel et REFUSE de démarrer sans, en nommant la cause · `auto` prend la carte si elle est utilisable et retombe sur le logiciel sinon, en le disant. Un repli silencieux ferait mentir le calcul de capacité : on croirait économiser un cœur par flux en les consommant.",
