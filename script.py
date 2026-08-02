@@ -6,6 +6,15 @@
 import mmap, struct, time, subprocess, threading, json, signal, os, math
 from collections import deque
 import bobimxl   # migration MXL : entrée vidéo (Reader) + audio (AudioReader gapless) — Phases 1/3
+
+
+def _mxl_lib_state():
+    """Variante libmxl réellement chargée (baseline / x86-64-v3) — diagnostic seul, ne doit
+    JAMAIS faire échouer /state."""
+    try:
+        return bobimxl.lib_info()
+    except Exception:
+        return None
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ─── Config injectée (contrat plugin) ───────────────────────────────
@@ -927,7 +936,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                               # continuerait de compter un cœur économisé qui ne l'est pas.
                               "encoder": ENCODER, "encoder_demande": _ENC_DEMANDE,
                               "nvenc_dispo": _NVENC_OK, "vcodec": VCODEC,
-                              "plugin_version": PLUGIN_VERSION}})
+                              "plugin_version": PLUGIN_VERSION,
+                              "mxl_lib": _mxl_lib_state()}})
         else:
             with _hot_lock: shm = _hot_cur["shm"]
             self._reply(200, {{"shm": shm, "width": WIDTH, "height": HEIGHT}})

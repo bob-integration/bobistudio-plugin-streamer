@@ -1,7 +1,10 @@
 {
-  "version": "0.16.0",
+  "version": "0.17.0",
   "date": "2026-08-02",
   "changes": {
+    "Variante libmxl exposée dans /state (0.17.0)": [
+      "GET /state porte désormais `mxl_lib` : {path, variante} de la libmxl RÉELLEMENT chargée (x86-64-v3/glibc-hwcaps ou baseline), lu via bobimxl.lib_info(). Jusqu'ici cette information n'était constatable que PAR NŒUD (app/placement.py) — un conteneur retombé sur la baseline (~20 % de coût en régime consommateur) ne se voyait qu'indirectement. Protégé par try/except : une erreur de lecture ne casse jamais /state."
+    ],
     "Une source 50p n'est plus diffusée à 25 images neuves (0.16.0)": [
       "Un streamer réglé à 50 fps produisait un flux à 50 trames/s dont UNE SUR DEUX était un doublon exact : la cadence était juste, le mouvement à moitié. Repéré à l'œil sur une mire (barre qui se fige, flashs manqués), confirmé par décodage — 50,0 % de trames identiques à la précédente, sur x264 comme sur NVENC.",
       "Cause : `_apply_fmt` ne lisait la cadence du flowDef que si la source était ENTRELACÉE. En progressif, `IN_FPS` gardait son défaut de 25. ffmpeg était donc lancé avec `-r 25`, et comme la sortie visait 50, un filtre `fps=50` s'ajoutait par-dessus — qui duplique. Le streamer poussait pourtant 50 images distinctes ; ffmpeg les horodatait à 25 et en refabriquait le double.",
