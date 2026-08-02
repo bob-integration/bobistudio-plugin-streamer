@@ -8,14 +8,15 @@
     "oklch": "0.77 0.06 50"
   },
   "deploy_order": 2,
-  "version": "0.14.0",
+  "version": "0.15.0",
   "runtime": "docker",
   "adapts_input": true,
   "image": "media",
   "resources": {
     "cores": 4,
     "memory": 1024,
-    "pin": false
+    "pin": false,
+    "gpu_optional": 1
   },
   "description": "Encodeur/streamer : encode une entrée vidéo (+ audio 8ch) et diffuse vers plusieurs destinations UDP/SRT/WebRTC (un seul encode, fan-out). Édité sur la page I/O (onglet Streams).",
   "nav": {
@@ -42,7 +43,10 @@
       "gop": 25,
       "width": 0,
       "height": 0,
-      "fps": 25
+      "fps": 25,
+      "encoder": "cpu",
+      "nvenc_preset": "p1",
+      "nvenc_tune": "ull"
     },
     "audio": {
       "enabled": false,
@@ -142,6 +146,85 @@
   ],
   "config_schema": [
     {
+      "key": "video.encoder",
+      "type": "select",
+      "label": "Encodeur vidéo",
+      "options": [
+        {
+          "value": "cpu",
+          "label": "Logiciel (x264/x265)"
+        },
+        {
+          "value": "nvenc",
+          "label": "Matériel NVENC — exigé"
+        },
+        {
+          "value": "auto",
+          "label": "Matériel si disponible, logiciel sinon"
+        }
+      ],
+      "default": "cpu",
+      "help": "L'encodage matériel décharge le processeur d'environ un cœur par flux 1080p50 (mesuré) et demande un GPU NVIDIA sur le nœud. « Exigé » refuse de démarrer sans carte utilisable plutôt que de retomber en silence sur le logiciel ; « si disponible » tolère le repli et l'annonce dans l'état du conteneur."
+    },
+    {
+      "key": "video.nvenc_preset",
+      "type": "select",
+      "label": "Preset NVENC",
+      "options": [
+        {
+          "value": "p1",
+          "label": "p1 — latence minimale"
+        },
+        {
+          "value": "p2",
+          "label": "p2 — très rapide"
+        },
+        {
+          "value": "p3",
+          "label": "p3 — rapide"
+        },
+        {
+          "value": "p4",
+          "label": "p4 — équilibré"
+        },
+        {
+          "value": "p5",
+          "label": "p5 — qualité"
+        },
+        {
+          "value": "p6",
+          "label": "p6 — haute qualité"
+        },
+        {
+          "value": "p7",
+          "label": "p7 — qualité maximale"
+        }
+      ],
+      "default": "p1",
+      "help": "Échange latence contre qualité, de p1 (le plus rapide) à p7. Sans effet en encodage logiciel."
+    },
+    {
+      "key": "video.nvenc_tune",
+      "type": "select",
+      "label": "Profil de latence NVENC",
+      "options": [
+        {
+          "value": "ull",
+          "label": "Ultra faible latence (direct)"
+        },
+        {
+          "value": "ll",
+          "label": "Faible latence"
+        },
+        {
+          "value": "hq",
+          "label": "Qualité"
+        }
+      ],
+      "default": "ull",
+      "help": "Équivalent NVENC du « zerolatency » de x264. Sans effet en encodage logiciel."
+    },
+    {
       "key": "slice_mode",
       "hidden": true,
       "type": "checkbox",
@@ -194,6 +277,28 @@
             ],
             "default": "info",
             "path": "log_level"
+          }
+        }
+      },
+      {
+        "label": "Encodage matériel (NVENC)",
+        "endpoint": "/state",
+        "readonly": true,
+        "fields": {
+          "encoder": {
+            "label": "Encodeur actif",
+            "type": "enum",
+            "options": [
+              "cpu",
+              "nvenc"
+            ],
+            "path": "encoder",
+            "help": "Encodeur RÉELLEMENT utilisé — diffère de celui demandé quand le mode « si disponible » a dû retomber sur le logiciel."
+          },
+          "nvenc_dispo": {
+            "label": "Pile matérielle utilisable",
+            "type": "bool",
+            "path": "nvenc_dispo"
           }
         }
       }

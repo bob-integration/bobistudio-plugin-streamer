@@ -1,7 +1,14 @@
 {
-  "version": "0.14.0",
-  "date": "2026-07-27",
+  "version": "0.15.0",
+  "date": "2026-08-02",
   "changes": {
+    "Encodage matériel NVENC — un cœur libéré par flux (0.15.0)": [
+      "L'encodage x264 d'un flux 1080p50 coûte 1,16 cœur ; le même en NVENC en coûte 0,22 (mesuré au banc sur Quadro P5000, même entrée, 20 s de contenu, ffmpeg -benchmark). Soit ≈ 0,95 cœur rendu par flux. À ne pas surestimer : le conteneur complet coûte ≈ 3 cœurs et l'encodeur n'en est qu'un tiers — la lecture MXL, la conversion de chroma et le tuyau ne bougent pas.",
+      "Trois modes, réglés par `video.encoder`. `cpu` (défaut, comportement INCHANGÉ pour tous les streamers existants) · `nvenc` exige le matériel et REFUSE de démarrer sans, en nommant la cause · `auto` prend la carte si elle est utilisable et retombe sur le logiciel sinon, en le disant. Un repli silencieux ferait mentir le calcul de capacité : on croirait économiser un cœur par flux en les consommant.",
+      "L'état `/state` publie l'encodeur RÉELLEMENT actif (`encoder`), celui demandé (`encoder_demande`) et la disponibilité de la pile (`nvenc_dispo`) — c'est la distinction qui rend un repli visible, en supervision comme en condition de macro.",
+      "⚠ Les options de x264 ne sont pas celles de NVENC : `-preset` prend p1…p7 et non `ultrafast`, `-tune zerolatency` n'existe pas (c'est `ll`/`ull`), le débit constant se demande par `-rc cbr`. Les deux jeux d'options sont désormais construits séparément ; les mélanger fait échouer ffmpeg.",
+      "Le type se déclare `resources.gpu_optional` et non `gpu` : une carte n'est allouée qu'aux INSTANCES qui encodent en matériel. Déclarer un besoin de type aurait réservé un GPU à chaque streamer en x264, et quelques instances auraient suffi à immobiliser les quatre cartes exploitables du parc."
+    ],
     "Reconnexion d'un lecteur MXL DÉCROCHÉ — vidéo et audio (0.14.0)": [
       "Un producteur amont qui DÉTRUIT puis RECRÉE son flux sous le MÊME nom (changement de source d'un slot RX 2110 — mtl_rx fusionne/dégroupe alors ses sessions —, redéploiement, reconfiguration) laissait le streamer collé à la génération MORTE. Piège : cette génération reste LISIBLE, index figé → ni SIGBUS ni exception, donc AUCUNE des deux reprises existantes ne partait. Résultat : `got[0] > last_index` jamais vrai, encodeur à vide, flux gelé pour toujours.",
       "Vidéo : contrôle à ~2 Hz en tête de boucle via la parade partagée `bobimxl.Reader.reopen_if_stale()` (détection par now_tai − lastWriteTime, close → garbage_collect → réouverture, escalade sur Instance dédiée au 2e essai). `last_index` est remis à 0 : la génération neuve repart d'index bas et serait sinon filtrée.",

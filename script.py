@@ -239,7 +239,42 @@ def _detect_dims():
 
 # Signale au main loop de fermer/rouvrir le shm et relancer ffmpeg (injection format à chaud).
 _restart_signal = threading.Event()
-VCODEC = {{"h264": "libx264", "h265": "libx265"}}.get(VIDEO_CFG.get("codec", "h264"), "libx264")
+# ─── Choix de l'encodeur : logiciel (x264/x265) ou matériel (NVENC) ──────────
+# `video.encoder` vaut "cpu" (logiciel imposé), "nvenc" (matériel EXIGÉ) ou "auto" (matériel s'il
+# est utilisable, logiciel sinon — et on le DIT). Le mode matériel n'est possible que si le
+# conteneur a reçu une carte ET la capacité pilote `video` : `--gpus` seul n'accorde que
+# compute/utility, `libnvidia-encode` n'est alors PAS injectée et ffmpeg échoue sur un
+# « Invalid argument (-22) » qui ne nomme pas la cause. On teste donc la présence de la
+# bibliothèque plutôt que d'attendre l'échec.
+_ENC_DEMANDE = str(VIDEO_CFG.get("encoder", "cpu")).strip().lower() or "cpu"
+
+
+def _nvenc_dispo():
+    """La pile d'encodage matériel est-elle réellement utilisable dans CE conteneur ?"""
+    import glob as _glob
+    return bool(_glob.glob("/usr/lib/x86_64-linux-gnu/libnvidia-encode.so*")
+                or _glob.glob("/usr/lib/*/libnvidia-encode.so*"))
+
+
+_NVENC_OK = _nvenc_dispo()
+if _ENC_DEMANDE == "nvenc" and not _NVENC_OK:
+    # Échec BRUYANT et immédiat : l'exploitant a EXIGÉ le matériel. Repartir en x264 en silence
+    # ferait mentir le calcul de capacité — on croirait économiser un cœur par flux en les
+    # consommant. Le message nomme la cause exacte, pas le symptôme ffmpeg.
+    log("encodeur NVENC exigé mais indisponible dans ce conteneur : aucune libnvidia-encode. "
+        "Le nœud n'a pas de GPU alloué, ou la capacité pilote `video` manque "
+        "(NVIDIA_DRIVER_CAPABILITIES). Régler video.encoder sur `auto` pour tolérer le repli.",
+        "error")
+ENCODER = ("nvenc" if (_ENC_DEMANDE == "nvenc"
+                       or (_ENC_DEMANDE == "auto" and _NVENC_OK)) else "cpu")
+if _ENC_DEMANDE == "auto":
+    log("encodeur auto → %s" % ("NVENC (matériel)" if _NVENC_OK else "x264/x265 (logiciel, "
+                                "aucun GPU utilisable dans ce conteneur)"), "info")
+
+_VC_LOGICIEL = {{"h264": "libx264", "h265": "libx265"}}
+_VC_NVENC = {{"h264": "h264_nvenc", "h265": "hevc_nvenc"}}
+VCODEC = (_VC_NVENC if ENCODER == "nvenc" else _VC_LOGICIEL).get(
+    VIDEO_CFG.get("codec", "h264"), "libx264")
 
 # ─── Format audio — MXL : flux continu float32 par-canal (48kHz / 8ch) ──
 # Migration MXL Phase 3 : l'entrée audio n'est plus un ring shm s24be mais un FLUX MXL de samples
@@ -548,12 +583,23 @@ def creer_ffmpeg():
     cmd = ["ffmpeg"] + vin
     ts_sel = webrtc_sel = None
     vchain = _video_filter()
-    vopts = ["-c:v", VCODEC,
-             "-preset", str(VIDEO_CFG.get("preset", "ultrafast")),
-             "-tune", "zerolatency",
-             "-b:v", str(VIDEO_CFG.get("bitrate", "4M")),
-             "-pix_fmt", OUT_PIX_FMT,                   # chroma de SORTIE (ffmpeg convertit si ≠ entrée)
-             "-g", str(GOP), "-keyint_min", str(GOP), "-sc_threshold", "0"]
+    if ENCODER == "nvenc":
+        # ⚠ Les options de x264 ne sont PAS celles de NVENC : `-preset` prend p1…p7 (et non
+        # `ultrafast`), `-tune zerolatency` n'existe pas (c'est `ll`/`ull`), et le débit constant
+        # se demande par `-rc cbr`. Passer les options logicielles à NVENC fait échouer ffmpeg.
+        vopts = ["-c:v", VCODEC,
+                 "-preset", str(VIDEO_CFG.get("nvenc_preset", "p1")),
+                 "-tune", str(VIDEO_CFG.get("nvenc_tune", "ull")),
+                 "-rc", "cbr", "-b:v", str(VIDEO_CFG.get("bitrate", "4M")),
+                 "-pix_fmt", OUT_PIX_FMT,               # chroma de SORTIE (ffmpeg convertit si ≠ entrée)
+                 "-g", str(GOP), "-keyint_min", str(GOP), "-no-scenecut", "1"]
+    else:
+        vopts = ["-c:v", VCODEC,
+                 "-preset", str(VIDEO_CFG.get("preset", "ultrafast")),
+                 "-tune", "zerolatency",
+                 "-b:v", str(VIDEO_CFG.get("bitrate", "4M")),
+                 "-pix_fmt", OUT_PIX_FMT,               # chroma de SORTIE (ffmpeg convertit si ≠ entrée)
+                 "-g", str(GOP), "-keyint_min", str(GOP), "-sc_threshold", "0"]
     # Colorimétrie : flags optionnels (vides => laissés à l'auto ffmpeg).
     for _flag, _key in (("-color_primaries", "color_primaries"),
                         ("-color_trc", "color_trc"),
@@ -561,8 +607,8 @@ def creer_ffmpeg():
         _val = str(VIDEO_CFG.get(_key) or "").strip()
         if _val:
             vopts += [_flag, _val]
-    if VCODEC == "libx265":
-        vopts += ["-tag:v", "hvc1"]
+    if VCODEC in ("libx265", "hevc_nvenc"):
+        vopts += ["-tag:v", "hvc1"]      # HEVC : le tag vaut pour les deux encodeurs
 
     if AUDIO_ENABLED:
         cmd += ["-thread_queue_size", "512",
@@ -584,6 +630,17 @@ def creer_ffmpeg():
         else:
             cmd += ["-map", "0:v"]
         cmd += vopts
+
+    if _ENC_DEMANDE == "nvenc" and not _NVENC_OK:
+        # REFUS, pas crash-loop. Lancer ffmpeg avec un encodeur absent le ferait échouer toutes
+        # les secondes sur « Invalid argument (-22) », l'agent le relancerait sans fin, et le
+        # journal se remplirait d'un message qui ne nomme pas la cause. On ne le lance pas : le
+        # conteneur reste debout, `/state` porte la raison, et l'exploitant la lit.
+        raise RuntimeError(
+            "encodage NVENC EXIGÉ mais aucune pile matérielle dans ce conteneur "
+            "(libnvidia-encode absente). Cause probable : aucun GPU alloué sur ce nœud, ou "
+            "capacité pilote `video` manquante. Basculer video.encoder sur `auto` pour "
+            "tolérer le repli logiciel.")
 
     cmd += ["-flush_packets", "1"]
     branches = _build_outputs(ts_sel, webrtc_sel)
@@ -848,6 +905,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                               "audio_enabled": AUDIO_ENABLED, "slot_src": src,
                               "hot_input": HOT_INPUT,
                               "log_level": LOG_LEVEL,   # lisible en condition de macro
+                              # Encodeur RÉELLEMENT actif, pas celui demandé : en mode `auto` les
+                              # deux diffèrent dès qu'aucun GPU n'est utilisable. Sans cette
+                              # distinction, un repli passerait inaperçu et le calcul de capacité
+                              # continuerait de compter un cœur économisé qui ne l'est pas.
+                              "encoder": ENCODER, "encoder_demande": _ENC_DEMANDE,
+                              "nvenc_dispo": _NVENC_OK, "vcodec": VCODEC,
                               "plugin_version": PLUGIN_VERSION}})
         else:
             with _hot_lock: shm = _hot_cur["shm"]
