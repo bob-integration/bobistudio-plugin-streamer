@@ -19,6 +19,31 @@ La page **Streams** est l'éditeur riche du streamer. Elle permet de :
 | **SRT** | Transport fiable sur réseau lossy (caller → listener) |
 | **WebRTC** | Push vers la passerelle MediaMTX, preview navigateur |
 
+## Encodage matériel (NVENC)
+
+Le champ **Encodeur vidéo** choisit entre logiciel (x264/x265, défaut), matériel NVENC
+(GPU NVIDIA du nœud) ou automatique :
+
+| Valeur | Comportement |
+|--------|-------------|
+| **Logiciel** | x264/x265, aucun GPU requis |
+| **Matériel — exigé** | Refuse de démarrer si aucun GPU/pilote NVENC utilisable plutôt que de retomber en silence sur le logiciel |
+| **Automatique** | Matériel si disponible, sinon logiciel — le repli est annoncé dans l'état du conteneur (`encoder` ≠ `encoder_demande`) |
+
+NVENC décharge le processeur d'environ un cœur par flux 1080p50. **Preset NVENC** (p1 rapide
+→ p7 qualité maximale) et **Profil de latence NVENC** (ultra faible latence / faible latence
+/ qualité, équivalent du « zerolatency » x264) n'ont d'effet qu'en encodage matériel.
+L'encodeur réellement actif et la disponibilité de la pile matérielle sont publiés sur
+`:8080` (`encoder`, `nvenc_dispo`).
+
+## Calage audio/vidéo (`av_offset_ms`)
+
+Décalage manuel de l'audio par rapport à la vidéo, en millisecondes, signé : positif retarde
+l'audio, négatif l'avance. Utile quand la chaîne en amont introduit un décalage connu
+(traitement audio externe, latence d'un encodeur source) que le streamer doit compenser
+avant diffusion. Le délai effectivement appliqué est publié sur `:8080`
+(`av_offset_ms`). Sans effet si l'audio est désactivé.
+
 ## Audio
 
 La source audio se câble via la page **Câbles** (port d'entrée audio séparé). Les pistes sont configurables dans la section Audio de la page Streams. UDP/SRT portent toutes les pistes AAC, WebRTC porte uniquement la 1ère piste (Opus).
