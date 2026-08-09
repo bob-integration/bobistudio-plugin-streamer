@@ -113,8 +113,9 @@ GOP        = int(VIDEO_CFG.get("gop") or EFF_FPS) or EFF_FPS
 WIDTH  = int(VIDEO_CFG.get("width") or 0)
 HEIGHT = int(VIDEO_CFG.get("height") or 0)
 FPS    = EFF_FPS
-HEADER_SIZE = 64
-RING_SIZE   = CONFIG.get("shm_video_ring", 10)
+# (ex-shm_video_ring/RING_SIZE/HEADER_SIZE/TOTAL_SIZE : dimensionnaient un ancien shm maison ;
+# l'entrée vidéo passe par bobimxl (MXL) — profondeur gérée par domaine, cf. réglage de nœud
+# mxl_history_ms. Retiré 2026-08-09, constante morte.)
 # ── Chroma : IN = layout du shm source (doit matcher le producteur) ; OUT = encode souhaité.
 _CHROMA_DIV = {{"420": (2, 2), "422": (2, 1), "444": (1, 1)}}
 _PIX_FMT    = {{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}
@@ -154,7 +155,6 @@ OUT_PIX_FMT = _PIX_FMT[OUT_CHROMA]
 _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]         # diviseurs chroma de l'ENTRÉE
 _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS   # octets/pixel d'entrée (incl. profondeur)
 FRAME_SIZE = int(WIDTH * HEIGHT * _IN_BPP)    # TRAME pleine (ce qu'on pousse à ffmpeg)
-TOTAL_SIZE = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
 GRAIN_H    = HEIGHT                            # hauteur d'un GRAIN (= ½ trame si entrelacé)
 GRAIN_SIZE = FRAME_SIZE                        # taille d'un GRAIN (= ½ trame si entrelacé)
 
@@ -162,7 +162,7 @@ def _recalc_sizes():
     """Recalcule tous les dérivés de (WIDTH, HEIGHT, IN_CHROMA, BIT_DEPTH, IN_INTERLACED).
     WIDTH/HEIGHT sont TOUJOURS des dims de TRAME ; le GRAIN vaut ½ trame en entrelacé."""
     global _IN_DEEP, _IN_DBPS, _IN_SUF, IN_PIX_FMT, _ICW, _ICH, _IN_BPP
-    global FRAME_SIZE, TOTAL_SIZE, GRAIN_H, GRAIN_SIZE
+    global FRAME_SIZE, GRAIN_H, GRAIN_SIZE
     _IN_DEEP    = BIT_DEPTH >= 10
     _IN_DBPS    = 2 if _IN_DEEP else 1
     _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
@@ -170,7 +170,6 @@ def _recalc_sizes():
     _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]
     _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS
     FRAME_SIZE  = int(WIDTH * HEIGHT * _IN_BPP)
-    TOTAL_SIZE  = HEADER_SIZE + (FRAME_SIZE * RING_SIZE)
     GRAIN_H     = (HEIGHT // 2) if IN_INTERLACED else HEIGHT
     GRAIN_SIZE  = int(WIDTH * GRAIN_H * _IN_BPP)
 

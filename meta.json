@@ -1,7 +1,10 @@
 {
-  "version": "0.17.0",
-  "date": "2026-08-02",
+  "version": "0.17.1",
+  "date": "2026-08-09",
   "changes": {
+    "Audit shm_video_ring/shm_audio_ring : purge du legacy MXL (0.17.1)": [
+      "MORT — shm_video_ring ne dimensionnait plus rien (entrée via bobimxl/MXL) : constante retirée"
+    ],
     "Variante libmxl exposée dans /state (0.17.0)": [
       "GET /state porte désormais `mxl_lib` : {path, variante} de la libmxl RÉELLEMENT chargée (x86-64-v3/glibc-hwcaps ou baseline), lu via bobimxl.lib_info(). Jusqu'ici cette information n'était constatable que PAR NŒUD (app/placement.py) — un conteneur retombé sur la baseline (~20 % de coût en régime consommateur) ne se voyait qu'indirectement. Protégé par try/except : une erreur de lecture ne casse jamais /state."
     ],
