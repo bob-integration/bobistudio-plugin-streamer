@@ -395,6 +395,30 @@ metrics = {{"fps": 0.0, "in_width": 0, "in_height": 0, "in_chroma": IN_CHROMA, "
             "out_width": OUT_WIDTH, "out_height": OUT_HEIGHT, "out_fps": OUT_FPS,
             "in_fps_seen": 0.0, "pushed_fps": 0.0, "dropped_stale_fps": 0.0,
             "inputs_latency_ms": {{}}, "out_bitrate_kbps": 0.0, "destinations": [],
+            # ENCODEUR RÉELLEMENT ACTIF, dans les métriques de base — pas seulement dans `/state`.
+            # C'est ici qu'on regarde quand un flux est muet, et `in_fps_seen` élevé face à
+            # `pushed_fps` nul dit déjà « la lecture va, l'encodage meurt » : l'encodeur doit être
+            # sur la MÊME page, sinon il faut aller le chercher ailleurs pour nommer la cause.
+            # `encoder_replie` = on a DÉCLASSÉ le matériel en cours de route (cf.
+            # _replier_si_encodeur_refuse) — un flux qui tourne à un coût CPU non budgété.
+            "encoder": ENCODER, "encoder_demande": _ENC_DEMANDE, "encoder_replie": False,
+            # ORIGINE DES DEUX LIGNES DE TEMPS. Les deux entrées de ffmpeg sont BRUTES
+            # (rawvideo, f32le) : aucune ne porte d'horodatage, leurs pts viennent du seul NOMBRE
+            # d'éléments écrits. La trame 0 et l'échantillon 0 sont donc appariés quoi qu'il
+            # arrive, et l'écart entre les instants où les deux flux COMMENCENT À COULER part tel
+            # quel dans le flux émis, constant, pour tous les consommateurs qui honorent les pts.
+            # Négatif = l'audio a commencé AVANT la vidéo (l'audio sortira en retard d'autant).
+            "av_origine_ms": None,
+            # CE QU'ON ÉCRIT, des deux côtés, converti en millisecondes de média. ffmpeg dérive
+            # les pts de nos deux entrées BRUTES du seul NOMBRE d'éléments écrits : ce compteur
+            # est donc, à la milliseconde près, le calage A/V que NOUS lui donnons. Le comparer à
+            # l'écart réellement émis dit de quel côté se trouve le défaut — chez nous, ou dans
+            # ffmpeg. Positif = on a écrit plus d'audio que de vidéo (l'audio sortira en avance).
+            "av_ecriture_ms": None,
+            # Les deux compteurs BRUTS, en ms de média : `av_ecriture_ms` est leur différence, et
+            # une différence ne dit pas QUI bouge. Pendant le transitoire de démarrage, c'est la
+            # seule façon de voir si l'audio s'emballe ou si la vidéo rattrape.
+            "av_ecrit_video_ms": None, "av_ecrit_audio_ms": None,
             "av_offset_ms": 0, "slice_mode": SLICE_MODE}}
 
 # ─── Instrumentation : tail du stderr ffmpeg (diagnostic backpressure encode/RTSP) ──
@@ -452,6 +476,7 @@ def _refresh_metrics(fps=None, up=True):
     if AUDIO_ENABLED and AUDIO_SHM:
         lat[AUDIO_SHM] = lat_audio.avg()   # latence audio (None si pas de chunk frais récent)
     metrics["inputs_latency_ms"] = lat
+    _ecriture_maj()
     metrics["destinations"] = _dests_summary(up)
 
 # Flag pour signaler une Bus error
@@ -587,10 +612,64 @@ def _video_filter():
         parts.append(f"fps={{OUT_FPS}}")
     return ",".join(parts)
 
+# ─── REPLI MATÉRIEL → LOGICIEL À L'EXÉCUTION ────────────────────────────────────────────────
+#
+# `_nvenc_dispo()` teste la PRÉSENCE de `libnvidia-encode` — nécessaire, pas suffisant. Il attrape
+# « pas de GPU / capacité pilote `video` absente », décidés au démarrage. Il ne peut RIEN contre
+# une carte qui devient inutilisable ENSUITE : le fichier reste là, les `/dev/nvidia*` aussi, et
+# seul l'accès cgroup au périphérique a disparu.
+#
+# ★ VU EN PRODUCTION (Horace, 2026-08-28) : un `systemctl daemon-reload` sur le nœud a révoqué le
+# GPU du conteneur de monitoring déjà lancé (mode de panne documenté : les périphériques sont
+# injectés à la CRÉATION, un reload réapplique les règles cgroup et retire l'accès aux conteneurs
+# en marche). `libnvidia-encode` toujours présente ⇒ `_NVENC_OK` vrai ⇒ ffmpeg lancé en
+# `h264_nvenc` ⇒ « Invalid argument (-22) » ⇒ relancé ⇒ re-échoue. **Pendant des JOURS** :
+# `pushed_fps` 0,7 pour `in_fps_seen` 50,8, et aucune alerte — le conteneur était « running ».
+#
+# Le contrat de `auto` était donc à moitié tenu : il promet de retomber sur le logiciel « et de le
+# DIRE », mais ne couvrait que l'absence PRÉVUE, pas la panne IMPRÉVUE. Un repli qui ne couvre que
+# ce qu'on avait anticipé n'est pas un repli.
+#
+# Règle : trois relances rapprochées d'affilée = l'encodeur ne démarre pas. En `auto` on DÉCLASSE
+# en logiciel et on le crie ; en `nvenc` EXPLICITE on ne déclasse jamais — l'exploitant a exigé le
+# matériel, et un repli muet ferait mentir le calcul de capacité (on croirait économiser des cœurs
+# en les consommant). On ne teste PAS le périphérique par une sonde : ouvrir la carte pour la
+# sonder, c'est la détenir (piège déjà rencontré) — l'échec répété est un signal suffisant.
+_ff_relance = {{"t": 0.0, "courtes": 0}}
+_REPLI_RELANCES = 3      # relances rapprochées consécutives avant de déclasser
+_REPLI_FENETRE_S = 8.0   # « rapprochée » = ffmpeg n'a pas tenu ce temps
+
+
+def _replier_si_encodeur_refuse():
+    """Déclasse NVENC → logiciel quand ffmpeg meurt en boucle, en mode `auto` seulement."""
+    global ENCODER, VCODEC
+    _t = time.monotonic()
+    _ff_relance["courtes"] = (_ff_relance["courtes"] + 1
+                              if _ff_relance["t"] and (_t - _ff_relance["t"]) < _REPLI_FENETRE_S
+                              else 0)
+    _ff_relance["t"] = _t
+    if (ENCODER != "nvenc" or _ENC_DEMANDE != "auto"
+            or _ff_relance["courtes"] < _REPLI_RELANCES):
+        return
+    ENCODER = "cpu"
+    VCODEC = _VC_LOGICIEL.get(VIDEO_CFG.get("codec", "h264"), "libx264")
+    _ff_relance["courtes"] = 0
+    metrics["encoder"] = ENCODER
+    metrics["encoder_replie"] = True
+    log("encodeur MATÉRIEL en échec répété (%d relances en moins de %.0f s) — repli sur %s. "
+        "libnvidia-encode est présente : la carte a très probablement été révoquée sous le "
+        "conteneur (un `systemctl daemon-reload` sur le nœud le fait). Le flux repart en "
+        "LOGICIEL, donc à un coût CPU qui n'était pas budgété — recréer le conteneur rend "
+        "l'accès au GPU."
+        % (_REPLI_RELANCES, _REPLI_FENETRE_S, VCODEC), "error")
+
+
 def creer_ffmpeg():
+    _replier_si_encodeur_refuse()
     # -r d'entrée = cadence du signal reçu : EFF_FPS en mode moniteur (le feeder cadence
     # lui-même à cette valeur), sinon la cadence native du pipeline (IN_FPS).
     in_rate = EFF_FPS if HOT_INPUT else IN_FPS
+    _ecrit_rate[0] = float(in_rate or 25)
     # Calage A/V MANUEL (réglage `av_offset_ms`, signé, ms) appliqué via les PTS : >0 → retarder
     # l'audio (adelay, cf. _audio_plan) ; <0 → retarder la vidéo (-itsoffset sur pipe:0, pas de
     # resampler côté vidéo donc l'itsoffset survit). 0 = aucun décalage (défaut). N'agit que sur les
@@ -598,9 +677,22 @@ def creer_ffmpeg():
     av = int(CONFIG.get("av_offset_ms") or 0) * 1000000 if AUDIO_ENABLED else 0
     a_delay_ms = int(round(av / 1e6)) if av > 0 else 0
     metrics["av_offset_ms"] = int(round(av / 1e6))        # délai appliqué (signé), exposé sur :8080
-    vin = ["-thread_queue_size", "512",                   # buffer d'entrée vidéo : ffmpeg draine pipe:0
-           "-f", "rawvideo", "-pix_fmt", IN_PIX_FMT,      # indépendamment (sinon bloqué pendant la
-           "-s", f"{{WIDTH}}x{{HEIGHT}}", "-r", str(in_rate)]  # config du filtre [1:a])
+    # ⚠ CALAGE A/V NON RÉSOLU (mesuré 2026-08-25, cf. TODO.md). Les deux entrées sont BRUTES :
+    # sans horodatage, ffmpeg dérive leurs pts du seul NOMBRE d'éléments lus et apparie la trame 0
+    # avec l'échantillon 0, quelles que soient leurs dates réelles. Sur une chaîne
+    # avsync → streamer → UDP, trois démarrages de la MÊME configuration donnent **+58, +73 puis
+    # +82 ms** d'écart A/V — chacun parfaitement stable pendant tout le run, différent d'un run à
+    # l'autre. Le calage se décide donc au démarrage de ffmpeg. Conséquences pratiques : le
+    # réglage `av_offset_ms` ne peut PAS le rattraper (il faudrait une valeur différente à chaque
+    # redémarrage), et ce qui est mesuré ici (`av_origine_ms` ~10 ms, `inputs_latency_ms` ~5 et
+    # ~2,5 ms) n'en explique qu'une vingtaine de ms. `-use_wallclock_as_timestamps 1` sur les deux
+    # entrées a été essayé UNE fois (+59 ms, dans la dispersion des runs sans lui) : non concluant,
+    # non retenu.
+    # `-thread_queue_size` : ffmpeg draine pipe:0 indépendamment (sinon bloqué pendant la
+    # configuration du filtre [1:a]).
+    vin = ["-thread_queue_size", "512",
+           "-f", "rawvideo", "-pix_fmt", IN_PIX_FMT,
+           "-s", f"{{WIDTH}}x{{HEIGHT}}", "-r", str(in_rate)]
     if av < 0:                                            # vidéo en avance → la retarder
         vin += ["-itsoffset", f"{{-av / 1e9:.3f}}"]
     vin += ["-i", "pipe:0"]
@@ -673,8 +765,71 @@ def creer_ffmpeg():
     else:
         cmd += ["-f", "null", "-"]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Nouvel encodeur = nouvelle origine pour les deux lignes de temps.
+    _origine["video"] = _origine["audio"] = None
+    _ecrit["video"] = _ecrit["audio"] = 0
+    metrics["av_origine_ms"] = None
+    metrics["av_ecriture_ms"] = metrics["av_ecrit_video_ms"] = metrics["av_ecrit_audio_ms"] = None
+    proc.stdin = _StdinTemoin(proc.stdin)
     threading.Thread(target=_drain_stderr, args=(proc,), daemon=True).start()
     return proc
+
+# ─── Origine des deux lignes de temps (mesure du calage A/V) ─────────
+# On date la PREMIÈRE écriture de chaque essence vers ffmpeg. Leur écart EST le calage A/V du
+# flux émis (cf. metrics["av_origine_ms"]) : c'est la seule grandeur qui explique un décalage
+# CONSTANT, là où une différence de fraîcheur de lecture (`inputs_latency_ms`) expliquerait un
+# décalage variable. Posé à UN endroit par essence — pour la vidéo, en enveloppant stdin plutôt
+# qu'en touchant les huit points d'écriture (entière, tranche, weave, secours) : un chemin
+# oublié n'aurait faussé la mesure que sur ce chemin-là.
+_origine = {{"video": None, "audio": None}}
+_ecrit = {{"video": 0, "audio": 0}}      # trames et échantillons écrits vers ffmpeg
+_ecrit_rate = [25.0]                    # cadence DÉCLARÉE à ffmpeg (-r), posée par creer_ffmpeg
+
+# ⚠ PLAFONNER L'AVANCE DE L'AUDIO A ÉTÉ ESSAYÉ ET NE MARCHE PAS (2026-08-25). L'idée était de
+# tenir les deux compteurs en phase, puisque ffmpeg apparie positionnellement l'échantillon 0 avec
+# la trame 0. Mesuré : le plafond DÉPLACE le calage d'environ 130 ms (les écarts passent de +58…+82
+# à −41…−70 ms) mais n'enlève RIEN à la variabilité d'un démarrage à l'autre — et trois plafonds
+# différents (100, 250, 400 ms) donnent le MÊME résidu de 240 ms, parce que le garde-fou qui doit
+# relâcher l'invariant quand la vidéo est à l'arrêt s'ouvre pendant le démarrage, c'est-à-dire
+# pendant la seule phase qui compte. Ne pas le refaire tel quel : la variabilité résiduelle
+# (±20 ms) se joue ailleurs, dans le démarrage de ffmpeg lui-même. Cf. TODO.md.
+def _ecriture_maj():
+    r = _ecrit_rate[0] or 25.0
+    v_ms = _ecrit["video"] * 1000.0 / r
+    a_ms = _ecrit["audio"] / (A_SAMPLE_RATE / 1000.0)
+    metrics["av_ecrit_video_ms"] = round(v_ms, 1)
+    metrics["av_ecrit_audio_ms"] = round(a_ms, 1)
+    metrics["av_ecriture_ms"] = round(a_ms - v_ms, 1)
+
+def _origine_note(essence):
+    if _origine[essence] is not None:
+        return
+    _origine[essence] = bobimxl.now_tai()
+    v, a = _origine["video"], _origine["audio"]
+    if v is not None and a is not None:
+        metrics["av_origine_ms"] = round((a - v) / 1e6, 1)
+        log(f"calage A/V : l'audio commence à couler {{(a - v) / 1e6:+.1f}} ms après la vidéo "
+            f"(négatif = avant ; cet écart part tel quel dans le flux émis)", "info")
+
+class _StdinTemoin:
+    """Enveloppe le stdin de ffmpeg pour dater la PREMIÈRE écriture vidéo."""
+    __slots__ = ("_f",)
+    def __init__(self, f): self._f = f
+    def write(self, b):
+        n = self._f.write(b)
+        _origine_note("video")
+        # Une trame = GRAIN_SIZE octets ; les écritures partielles (mode tranche, secours) sont
+        # comptées au prorata, sinon le compte dériverait sur ces chemins-là seulement.
+        # ⚠ LIMITE CONNUE : en mode tranche, une trame complétée par TIMEOUT écrit des bandes de
+        # secours (reste du grain précédent, remplissage neutre) dont le total peut DÉPASSER une
+        # trame — le compte sur-estime alors la vidéo. Ces timeouts sont fréquents au DÉMARRAGE et
+        # absents en régime établi : le compteur est exact une fois la chaîne installée (mesuré
+        # ×0,995 sur 10 s) mais NE DOIT PAS servir à interpréter le transitoire de démarrage.
+        _ecrit["video"] += (len(b) / float(GRAIN_SIZE)) if GRAIN_SIZE else 0
+        return n
+    def flush(self):  return self._f.flush()
+    def close(self):  return self._f.close()
+    def fileno(self): return self._f.fileno()
 
 # ─── Thread lecteur audio → fifo (2e entrée ffmpeg) ──────────────────
 # IMPORTANT : on ouvre le fifo IMMÉDIATEMENT (sans attendre le shm audio) puis on
@@ -750,11 +905,24 @@ def audio_feeder():
                                 if pos < head:      # samples tombés de l'anneau → resync au plus récent
                                     pos = head; continue
                                 break               # head pas encore complet → on attend
+                            _origine_note("audio")
+                            _ecrit["audio"] += A_BLOCK
+                            _ecriture_maj()
                             fifo.write(_remap(r, idx))
                             pos += A_BLOCK; wrote_real = True; guard += 1
                         if wrote_real:
                             fifo.flush()            # BrokenPipe → handler externe
-                            lat = (bobimxl.now_tai() - ar.last_write_time()) / 1e6
+                            # ⚠ `lastWriteTime` n'est JAMAIS mis à jour sur un flux AUDIO MXL
+                            # (seuls les flux à GRAINS le bumpent) : la latence calculée dessus
+                            # tombait toujours hors bornes et `inputs_latency_ms` publiait None
+                            # pour l'audio DEPUIS TOUJOURS. La fraîcheur audio se lit sur
+                            # l'avancée de `head_index`, qui est une coordonnée TAI d'échantillon.
+                            # Ce n'est pas cosmétique : c'est l'âge du contenu qu'on donne à
+                            # l'encodeur, à comparer à celui de la vidéo (`lat_in`). Une
+                            # DIFFÉRENCE entre les deux part telle quelle dans le flux émis,
+                            # puisque ffmpeg apparie trame 0 et échantillon 0.
+                            lat = (bobimxl.now_tai() * A_SAMPLE_RATE // 1_000_000_000
+                                   - pos) / float(A_SAMPLE_RATE // 1000)
                             if 0 <= lat < 5000: lat_audio.push(lat)
                             sil_start = time.monotonic(); sil_written = 0
                 if wrote_real:
@@ -765,6 +933,8 @@ def audio_feeder():
                     due = int((time.monotonic() - sil_start) * 1000)
                     guard = 0
                     while sil_written < due and guard < 1000:
+                        _origine_note("audio")
+                        _ecrit["audio"] += A_BLOCK
                         fifo.write(SILENCE); sil_written += 1; guard += 1
                     fifo.flush()
                     time.sleep(0.004)
