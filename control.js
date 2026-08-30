@@ -55,8 +55,8 @@ window.MXLPlugins.streamer = (function () {
     }
     function destFields(d){
         const t = d.type || 'udp';
-        if(t=='udp') return txt('host',T('plugin.streamer.host'),d.host,'192.0.2.21')+num('port',T('plugin.streamer.port'),d.port==null?9000:d.port);
-        if(t=='srt') return txt('host',T('plugin.streamer.host'),d.host,'192.0.2.30')+num('port',T('plugin.streamer.port'),d.port==null?9001:d.port)
+        if(t=='udp') return txt('host',T('plugin.streamer.host'),d.host,'x.x.x.x')+num('port',T('plugin.streamer.port'),d.port==null?9000:d.port);
+        if(t=='srt') return txt('host',T('plugin.streamer.host'),d.host,'x.x.x.x')+num('port',T('plugin.streamer.port'),d.port==null?9001:d.port)
             +num('latency_ms',T('plugin.streamer.latency_ms'),d.latency_ms==null?120:d.latency_ms)
             +txt('passphrase',T('plugin.streamer.passphrase'),d.passphrase)+txt('streamid',T('plugin.streamer.streamid'),d.streamid);
         // Actif par défaut pour une nouvelle destination (enabled undefined) ; on
