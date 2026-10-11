@@ -1,7 +1,18 @@
 {
-  "version": "0.18.0",
-  "date": "2026-08-28",
+  "version": "0.19.0",
+  "date": "2026-10-12",
   "changes": {
+    "Son du moniteur WebRTC : silence, avance de ~0,45 s, irrégularité (0.19.0)": [
+      "★★★ MESURÉ (2026-10-11, moniteur NVENC, avsync + player sur dl360-1 → réplique RDMA dell-1) : après 7 redéploiements sur 7 le son sortait 100 % SILENCE alors que le bus et sa réplique étaient intacts. Cause : le feeder comblait les creux par un silence cadencé sur SA propre horloge ; pendant l'init de l'encodeur (fifo plein ≈ 1 s) il accumulait une dette de silence ≥ l'anneau audio (~0,3 s). Écrire B ms de silence prend B ms quand ffmpeg consomme au temps réel : la dette ne se résorbait jamais, la position tombait hors de l'anneau à chaque passage, on se recalait sur la tête, rien n'y était complet → re-silence. Pour toujours.",
+      "CORRECTIF — ANCRE A/V : l'échantillon n écrit est celui du bus d'index A0 + n, A0 = instant TAI du contenu de la trame 0 de l'encodeur. Un bloc absent (source coupée, anneau dépassé) devient du silence À SA POSITION ; une source VIVANTE en retard est attendue, jamais comblée d'avance. La vidéo du moniteur est cadencée sur t0 + k/fps (un retard d'encodeur se rattrape en répétant l'image ; au-delà de 2 s on saute des créneaux et l'audio saute la même durée).",
+      "Un fifo audio PAR encodeur : sur le fifo partagé, un feeder resté branché sur l'ancien descripteur écrivait dans le nouveau ffmpeg les ≤120 ms tamponnés de l'ancienne ligne de temps.",
+      "Réplique RDMA neuve : sa tête vaut ~0 un instant (vu : −1,8e12 échantillons de la grille). Un rebasage naïf sur cette valeur laissait le feeder à des heures de la tête, en silence. Le décalage source/grille n'est adopté que s'il est STABLE 0,5 s. Lecteur dont la tête avance mais dont les blocs récents sont illisibles → rouvert (2ᵉ essai sur Instance dédiée).",
+      "★★ CALAGE VU PAR LE NAVIGATEUR : la passerelle MediaMTX 1.9 date les paquets à l'ARRIVÉE (pas les pts de ffmpeg) et ses SR RTCP portent cette date. Mesure faite par un client RTSP qui lit ces SR comme un navigateur (les enregistrements ffmpeg -c copy de 6 s étaient FAUX : ±500 ms d'artefact, deux enregistrements du même flux donnaient +246 et −296 ms). Pts après l'ancre : 0 ± 20 ms ; vue navigateur : −70…−117 ms (son en avance) → compensation WEBRTC_AV_COMP_MS = 90 ms appliquée à l'ancre quand la sortie est WebRTC seule.",
+      "RÉSULTAT (avsync, 7 redéploiements par l'API du moniteur) : écart navigateur −20, +1, +1, −20, 0, +21, +34 ms (avant : −434 ms médian et variable) ; intervalle entre bips 1,000 s (avant 0,91…1,07) ; son présent 12/12 bascules player↔avsync, y compris réplique RDMA recréée de zéro (avant : 7/7 muets).",
+      "Sortie WebRTC en yuv420p (profil Main) : `h264_nvenc` ne sait pas le 4:2:2 et ffmpeg choisissait SEUL le 4:4:4 (« High 4:4:4 Predictive », illisible pour beaucoup de navigateurs). NVENC : `-delay 0 -zerolatency 1`.",
+      "Témoin `audio_feed` sur :8080 (real_ms, silence_ms, gap_ms, reader, lag_ms, head_ahead_ms…) : un flux 100 % silence et un flux sain affichaient jusqu'ici les mêmes compteurs.",
+      "⚠ `av_offset_ms` n'atteint pas le script : la liste blanche de app/scripts.normalize_worker_udp_params ne le conserve pas (hors de ce plugin, signalé)."
+    ],
     "L'encodeur matériel qui meurt en boucle replie enfin sur le logiciel (0.18.0)": [
       "★★ INCIDENT HORACE 2026-08-28 : le conteneur de monitoring d'un utilisateur est resté MUET PENDANT DES JOURS. Il lisait pourtant parfaitement sa source (`in_fps_seen` 50,8) mais ne poussait que **0,7 fps à 59 kbps** — ffmpeg mourait sur `[h264_nvenc] Invalid argument (-22)` et était relancé sans fin. Aucune alerte : le conteneur était « running », et sa cadence non tenue passait pour un moniteur en veille.",
       "CAUSE : un `systemctl daemon-reload` sur le nœud avait RÉVOQUÉ l'accès GPU du conteneur déjà lancé (les périphériques sont injectés à la CRÉATION ; un reload réapplique les règles cgroup). `libnvidia-encode` restait présente et les `/dev/nvidia*` en place — donc `_nvenc_dispo()`, qui teste la PRÉSENCE du fichier, répondait vrai.",

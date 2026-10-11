@@ -151,7 +151,20 @@ _IN_DEEP    = BIT_DEPTH >= 10
 _IN_DBPS    = 2 if _IN_DEEP else 1                                 # octets/échantillon entrée
 _IN_SUF     = (("12le" if BIT_DEPTH >= 12 else "10le") if _IN_DEEP else "")
 IN_PIX_FMT  = _PIX_FMT[IN_CHROMA] + _IN_SUF
-OUT_PIX_FMT = _PIX_FMT[OUT_CHROMA]
+
+
+def _out_pix_fmt(out_chroma, vcodec, webrtc):
+    """Chroma RÉELLEMENT encodé. Deux cas où honorer le réglage produirait un flux illisible :
+    - une branche WebRTC : les navigateurs ne décodent que le H.264 4:2:0 ; un 4:2:2 ou 4:4:4
+      part en profil High 4:2:2 / High 4:4:4 Predictive, que la plupart refusent ou saccadent ;
+    - `h264_nvenc` ne sait pas le 4:2:2 : ffmpeg choisit alors SEUL le yuv444p (constaté sur le
+      moniteur le 2026-10-11 : « High 4:4:4 Predictive ») au lieu de refuser.
+    Dans les deux cas on rabat sur yuv420p ; le 4:4:4 en NVENC hors WebRTC reste honoré."""
+    if webrtc:
+        return "yuv420p"
+    if vcodec == "h264_nvenc" and out_chroma == "422":
+        return "yuv420p"
+    return _PIX_FMT.get(out_chroma, "yuv422p")
 _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]         # diviseurs chroma de l'ENTRÉE
 _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS   # octets/pixel d'entrée (incl. profondeur)
 FRAME_SIZE = int(WIDTH * HEIGHT * _IN_BPP)    # TRAME pleine (ce qu'on pousse à ffmpeg)
@@ -319,8 +332,11 @@ AUDIO_ENABLED = bool(AUDIO_CFG.get("enabled")) and bool(AUDIO_SHM)
 # les PTS (UDP/SRT/fichier). NB (banc 2026-06-05) : (1) les GROS décalages A/V venaient de la FAMINE
 # CPU du conteneur (encode 1080p qui ne tient pas le temps réel → l'audio DÉRIVE) — réglée par le
 # profil `resources.cores` du manifeste, pas par un offset ; (2) le calage AUTO par media_ts a été
-# retiré (media_ts audio biaisé + inefficace) ; (3) le transport WebRTC réaligne l'A/V tout seul
-# (RTCP) → un offset ffmpeg n'a aucun effet sur WHEP (n'agit que sur mpegts/fichier).
+# retiré (media_ts audio biaisé + inefficace) ; (3) ⛔ « le transport WebRTC réaligne l'A/V tout
+# seul » était FAUX : la passerelle date les paquets à l'arrivée, un décalage de pts se retrouve
+# tel quel dans le navigateur (mesuré 2026-10-11, cf. WEBRTC_AV_COMP_MS).
+# ⚠ `av_offset_ms` n'atteint PAS le script aujourd'hui : la liste blanche de
+# app/scripts.normalize_worker_udp_params ne le conserve pas (constaté 2026-10-11).
 _sync_v_mts = [0]
 A_CHUNK_NS  = 1000000
 
@@ -664,8 +680,32 @@ def _replier_si_encodeur_refuse():
         % (_REPLI_RELANCES, _REPLI_FENETRE_S, VCODEC), "error")
 
 
+def _fifo_path(gen):
+    return "%s.%d" % (AUDIO_FIFO, gen)
+
+
+def _new_generation():
+    """Nouvel encodeur = nouvelle ligne de temps ET nouveau fifo audio. Un fifo PAR encodeur : sur
+    un fifo partagé, le feeder encore branché sur l'ancien descripteur écrivait dans le nouvel
+    ffmpeg (Linux ne casse le tube que s'il n'a plus AUCUN lecteur) les ≤120 ms tamponnés de
+    l'ancienne ligne de temps. Posé AVANT le Popen : le feeder ne doit jamais voir un ffmpeg neuf
+    sous l'ancienne génération."""
+    old = _av["gen"]
+    _av["anchor_ns"] = None; _av["skip_ns"] = 0; _av["hint_ns"] = None
+    if AUDIO_ENABLED:
+        try:
+            if not os.path.exists(_fifo_path(old + 1)):
+                os.mkfifo(_fifo_path(old + 1))
+        except Exception as e:
+            log(f"audio fifo non créé : {{e}}", "warning")
+        try: os.unlink(_fifo_path(old))
+        except Exception: pass
+    _av["gen"] = old + 1
+
+
 def creer_ffmpeg():
     _replier_si_encodeur_refuse()
+    _new_generation()
     # -r d'entrée = cadence du signal reçu : EFF_FPS en mode moniteur (le feeder cadence
     # lui-même à cette valeur), sinon la cadence native du pipeline (IN_FPS).
     in_rate = EFF_FPS if HOT_INPUT else IN_FPS
@@ -677,17 +717,11 @@ def creer_ffmpeg():
     av = int(CONFIG.get("av_offset_ms") or 0) * 1000000 if AUDIO_ENABLED else 0
     a_delay_ms = int(round(av / 1e6)) if av > 0 else 0
     metrics["av_offset_ms"] = int(round(av / 1e6))        # délai appliqué (signé), exposé sur :8080
-    # ⚠ CALAGE A/V NON RÉSOLU (mesuré 2026-08-25, cf. TODO.md). Les deux entrées sont BRUTES :
-    # sans horodatage, ffmpeg dérive leurs pts du seul NOMBRE d'éléments lus et apparie la trame 0
-    # avec l'échantillon 0, quelles que soient leurs dates réelles. Sur une chaîne
-    # avsync → streamer → UDP, trois démarrages de la MÊME configuration donnent **+58, +73 puis
-    # +82 ms** d'écart A/V — chacun parfaitement stable pendant tout le run, différent d'un run à
-    # l'autre. Le calage se décide donc au démarrage de ffmpeg. Conséquences pratiques : le
-    # réglage `av_offset_ms` ne peut PAS le rattraper (il faudrait une valeur différente à chaque
-    # redémarrage), et ce qui est mesuré ici (`av_origine_ms` ~10 ms, `inputs_latency_ms` ~5 et
-    # ~2,5 ms) n'en explique qu'une vingtaine de ms. `-use_wallclock_as_timestamps 1` sur les deux
-    # entrées a été essayé UNE fois (+59 ms, dans la dispersion des runs sans lui) : non concluant,
-    # non retenu.
+    # Calage A/V : les deux entrées sont BRUTES, ffmpeg en dérive les pts du seul NOMBRE d'éléments
+    # lus. Le calage est donc ce qu'on écrit à chaque position — cf. ANCRE A/V (feeder ancré sur la
+    # trame 0, vidéo moniteur cadencée sur t0 + k/fps). Historique : de 2026-08-25 à 2026-10-11 le
+    # calage variait d'un démarrage à l'autre (+58/+73/+82 ms en UDP, −430…−500 ms au moniteur) ;
+    # mesuré après l'ancre : pts à 0 ± 20 ms (une image à 25p) sur 8 démarrages.
     # `-thread_queue_size` : ffmpeg draine pipe:0 indépendamment (sinon bloqué pendant la
     # configuration du filtre [1:a]).
     vin = ["-thread_queue_size", "512",
@@ -699,6 +733,8 @@ def creer_ffmpeg():
     cmd = ["ffmpeg"] + vin
     ts_sel = webrtc_sel = None
     vchain = _video_filter()
+    _opix = _out_pix_fmt(OUT_CHROMA, VCODEC, _has_webrtc())
+    metrics["out_pix_fmt"] = _opix
     if ENCODER == "nvenc":
         # ⚠ Les options de x264 ne sont PAS celles de NVENC : `-preset` prend p1…p7 (et non
         # `ultrafast`), `-tune zerolatency` n'existe pas (c'est `ll`/`ull`), et le débit constant
@@ -707,14 +743,15 @@ def creer_ffmpeg():
                  "-preset", str(VIDEO_CFG.get("nvenc_preset", "p1")),
                  "-tune", str(VIDEO_CFG.get("nvenc_tune", "ull")),
                  "-rc", "cbr", "-b:v", str(VIDEO_CFG.get("bitrate", "4M")),
-                 "-pix_fmt", OUT_PIX_FMT,               # chroma de SORTIE (ffmpeg convertit si ≠ entrée)
+                 "-delay", "0", "-zerolatency", "1",
+                 "-pix_fmt", _opix,                     # chroma de SORTIE (cf. _out_pix_fmt)
                  "-g", str(GOP), "-keyint_min", str(GOP), "-no-scenecut", "1"]
     else:
         vopts = ["-c:v", VCODEC,
                  "-preset", str(VIDEO_CFG.get("preset", "ultrafast")),
                  "-tune", "zerolatency",
                  "-b:v", str(VIDEO_CFG.get("bitrate", "4M")),
-                 "-pix_fmt", OUT_PIX_FMT,               # chroma de SORTIE (ffmpeg convertit si ≠ entrée)
+                 "-pix_fmt", _opix,                     # chroma de SORTIE (cf. _out_pix_fmt)
                  "-g", str(GOP), "-keyint_min", str(GOP), "-sc_threshold", "0"]
     # Colorimétrie : flags optionnels (vides => laissés à l'auto ffmpeg).
     for _flag, _key in (("-color_primaries", "color_primaries"),
@@ -729,7 +766,7 @@ def creer_ffmpeg():
     if AUDIO_ENABLED:
         cmd += ["-thread_queue_size", "512",
                 "-f", "f32le", "-ar", str(A_SAMPLE_RATE), "-ac", str(OUT_CHANNELS),
-                "-i", AUDIO_FIFO]
+                "-i", _fifo_path(_av["gen"])]
         filters, amaps, acodecs, ts_sel, webrtc_sel = _audio_plan(a_delay_ms=a_delay_ms)
         # Filtre vidéo dans le même filter_complex que l'audio → on mappe [vout].
         if vchain:
@@ -785,6 +822,113 @@ _origine = {{"video": None, "audio": None}}
 _ecrit = {{"video": 0, "audio": 0}}      # trames et échantillons écrits vers ffmpeg
 _ecrit_rate = [25.0]                    # cadence DÉCLARÉE à ffmpeg (-r), posée par creer_ffmpeg
 
+# ─── ANCRE A/V : les deux entrées de ffmpeg sur UNE ligne de temps, celle du bus (TAI) ─────────
+# ffmpeg date des entrées BRUTES par leur seul compte : trame k ↔ k/fps, échantillon n ↔ n/48000.
+# Le calage du flux émis est donc entièrement décidé par CE QU'ON ÉCRIT à la position k ou n. Le
+# feeder d'avant écrivait « ce qui est frais quand ffmpeg lit » et comblait les creux par un silence
+# cadencé sur une horloge À LUI : deux lignes de temps sans rapport. Mesuré le 2026-10-11 sur le
+# moniteur : son EN AVANCE de 430-500 ms, bips espacés de 0,91 à 1,07 s pour 1,000 s à la source —
+# et, au démarrage d'un encodeur NVENC (≈1 s d'init pendant laquelle le fifo est plein), une dette
+# de silence ≥ l'anneau audio (~0,3 s) qui ne se résorbait JAMAIS : écrire B ms de silence prend
+# B ms quand ffmpeg consomme en temps réel, la position de lecture tombait hors de l'anneau à chaque
+# passage, on se recalait sur la tête, rien n'y était encore complet → re-silence. 100 % de silence
+# sur 7 redéploiements sur 7, son intact sur le bus.
+# Règle désormais : l'échantillon n écrit est l'échantillon du bus d'index A0 + n, où A0 est
+# l'instant TAI du CONTENU de la trame 0 de CET encodeur. Un bloc absent du bus (source coupée,
+# anneau dépassé) est remplacé par du silence À SA PLACE — la ligne de temps ne glisse jamais.
+# `gen` change à chaque ffmpeg : un feeder resté branché sur le fifo d'un encodeur précédent
+# (le nouveau rouvre le même fifo avant que l'ancien descripteur ne casse) se ré-ancre.
+_av = {{"gen": 0, "anchor_ns": None, "skip_ns": 0, "hint_ns": None}}
+A_LATE = A_SAMPLE_RATE // 5        # 200 ms : source absente/figée depuis cet âge → silence à sa place
+A_BATCH = 40                       # blocs max par passage du feeder (rattrapage sans affamer la boucle)
+A_OFFGRID = A_SAMPLE_RATE         # tête à plus d'1 s de la grille TAI → source hors grille, rebasée
+
+
+def _tai_samples(ns):
+    """Instant TAI (ns) → index d'échantillon à 48 kHz (même base que l'index d'un flux audio MXL)."""
+    return int(ns) * A_SAMPLE_RATE // 1_000_000_000
+
+
+def _anchor_from_hint(hint_ns, now_ns, video_age_ms=None):
+    """Instant TAI du CONTENU de la trame 0. `hint_ns` = instant du grain poussé (index_time du
+    flux, ou lastWriteTime) ; écarté s'il est à plus d'1 s de l'horloge (writer à index libre, flux
+    sans cadence lisible). Repli : maintenant moins l'âge moyen mesuré de la vidéo."""
+    if hint_ns is not None and abs(int(hint_ns) - int(now_ns)) < 1_000_000_000:
+        return int(hint_ns)
+    return int(now_ns) - int((video_age_ms or 0) * 1_000_000)
+
+
+def _audio_step(pos, head, now_s, src_off, block, late, alive=True):
+    """Décision du feeder pour le bloc [pos, pos+block) :
+    - "read"    : le bus l'a (tête au-delà) → le lire (silence à sa place s'il est sorti de l'anneau) ;
+    - "silence" : absent, source MORTE ou absente (pas de lecteur, tête figée), et déjà en retard
+                  de `late` sur l'horloge (+ décalage de la source) → comblé À CETTE POSITION ;
+    - "wait"    : pas encore écrit → attendre. Une source VIVANTE n'est jamais comblée d'avance :
+                  si elle est en retard, on l'attend (latence en plus, calage intact) — combler
+                  avant elle, c'était jeter ensuite le vrai son qui arrive.
+    `head` None = pas de lecteur / tête indéfinie."""
+    if head is not None and pos + block <= head:
+        return "read"
+    if (head is None or not alive) and pos + block <= now_s + src_off - late:
+        return "silence"
+    return "wait"
+
+
+def _src_offset_update(st, head, now_s, t, tol, settle_s, sr):
+    """Décalage de la ligne d'index de la source par rapport à la grille TAI (en échantillons).
+    L'index audio MXL est normativement l'instant TAI ; un writer à compteur libre en est loin, et
+    le suivre sur la grille ferait attendre (ou combler) pour toujours. On n'ADOPTE un nouveau
+    décalage que s'il est STABLE pendant `settle_s` : la tête d'un flux à
+    peine créé vaut ~0 un instant (vu le 2026-10-11 sur une réplique RDMA neuve : −1,8e12
+    échantillons), et adopter cette valeur-là laissait le feeder à des heures de la tête, en
+    silence pour toujours. `st` = {{"off": décalage adopté, "cand": candidat ou None}}."""
+    off = int(head) - int(now_s)
+    want = off if abs(off) > tol else 0
+    if abs(want - st["off"]) <= tol:
+        st["cand"] = None
+        return st["off"]
+    c = st.get("cand")
+    if c is None or abs(off - c[0]) > sr // 40:          # candidat neuf (ou instable : ±25 ms)
+        st["cand"] = (off, t)
+        return st["off"]
+    # Stable à ±25 ms sur `settle_s` : une tête FIGÉE ne l'est jamais (l'horloge avance, l'écart
+    # dérive de 100 ms par 100 ms), une tête transitoire non plus.
+    if t - c[1] >= settle_s:
+        st["off"] = want
+        st["cand"] = None
+    return st["off"]
+
+
+# ─── Compensation du transport WebRTC ──────────────────────────────────────────────────────────
+# La passerelle (MediaMTX 1.9) n'utilise PAS les pts ni les SR RTCP de ffmpeg : elle date chaque
+# paquet reçu à son HEURE D'ARRIVÉE, et c'est cette date qui part dans les SR vers le navigateur —
+# lequel cale l'image et le son dessus. Le calage vu par le navigateur = calage des pts + (retard
+# d'émission de la vidéo − celui de l'audio). Mesuré le 2026-10-11 (NVENC p4/ull, 1080p25 8 Mb/s,
+# client RTSP qui lit les SR de la passerelle comme le ferait un navigateur, avsync) : pts à 0/−20 ms
+# mais SR à −70…−117 ms (son en avance), 5 démarrages. Décaler le son de N ms dans les pts décale
+# la vue navigateur d'autant (vérifié : +100 → −80 devient +20). D'où cette compensation, appliquée
+# à l'ancre audio QUAND LA SORTIE EST WEBRTC SEULE (le moniteur) : une sortie mpegts (UDP/SRT)
+# honore les pts, elle serait décalée d'autant — on ne sert pas deux maîtres avec un seul encode.
+WEBRTC_AV_COMP_MS = 90
+
+
+def _webrtc_comp_ms(has_ts, has_webrtc):
+    return WEBRTC_AV_COMP_MS if (has_webrtc and not has_ts) else 0
+
+
+def _video_due(elapsed_s, fps, pushed, max_behind):
+    """Mode moniteur : trames à pousser MAINTENANT pour que la trame k parte à t0 + k/fps.
+    Renvoie (à_pousser, à_sauter). La trame k doit représenter l'instant t0 + k/fps, sinon la vidéo
+    glisse par rapport à l'audio (ancré sur le bus) : un retard (init de l'encodeur, pipe plein) se
+    RATTRAPE en répétant la dernière image. Au-delà de `max_behind` trames de retard on SAUTE des
+    créneaux plutôt que de rafaler — et l'audio saute la même durée (cf. _av["skip_ns"])."""
+    due = int(elapsed_s * fps) + 1
+    behind = due - pushed
+    if behind <= 0:
+        return 0, 0
+    skip = behind - 1 if behind > max_behind else 0
+    return behind - skip, skip
+
 # ⚠ PLAFONNER L'AVANCE DE L'AUDIO A ÉTÉ ESSAYÉ ET NE MARCHE PAS (2026-08-25). L'idée était de
 # tenir les deux compteurs en phase, puisque ffmpeg apparie positionnellement l'échantillon 0 avec
 # la trame 0. Mesuré : le plafond DÉPLACE le calage d'environ 130 ms (les écarts passent de +58…+82
@@ -816,6 +960,9 @@ class _StdinTemoin:
     __slots__ = ("_f",)
     def __init__(self, f): self._f = f
     def write(self, b):
+        if _av["anchor_ns"] is None:
+            # AVANT l'écriture : la 1ʳᵉ peut bloquer (ffmpeg en init) et le feeder attend l'ancre.
+            _av["anchor_ns"] = _anchor_from_hint(_av["hint_ns"], bobimxl.now_tai(), lat_in.avg())
         n = self._f.write(b)
         _origine_note("video")
         # Une trame = GRAIN_SIZE octets ; les écritures partielles (mode tranche, secours) sont
@@ -832,122 +979,180 @@ class _StdinTemoin:
     def fileno(self): return self._f.fileno()
 
 # ─── Thread lecteur audio → fifo (2e entrée ffmpeg) ──────────────────
-# IMPORTANT : on ouvre le fifo IMMÉDIATEMENT (sans attendre le shm audio) puis on
-# l'alimente en continu, à ~temps réel (1 chunk = 1 ms). Chunk réel si disponible et
-# frais, sinon SILENCE. Ainsi l'entrée audio de ffmpeg ne starve jamais → la vidéo
-# n'est jamais bloquée, même si la source audio est absente/muette.
+# Le fifo est ouvert dès que ffmpeg l'ouvre, et alimenté sur la ligne de temps du bus (cf. ANCRE
+# A/V) : l'échantillon n écrit est celui d'index A0 + n. Un bloc pas encore écrit sur le bus est
+# ATTENDU tant qu'il a moins de A_LATE ; au-delà (source absente, muette par coupure, figée), il est
+# remplacé par du silence À SA POSITION — ffmpeg n'est jamais affamé, la vidéo ne bloque jamais, et
+# la ligne de temps audio ne glisse pas d'un échantillon.
 SILENCE = bytes(A_OUT_CHUNK)   # 1 ms de silence à la largeur de SORTIE (OUT_CHANNELS)
 
-def audio_feeder():
-    try:
-        if not os.path.exists(AUDIO_FIFO):
-            os.mkfifo(AUDIO_FIFO)
-    except Exception as e:
-        log(f"audio fifo non créé : {{e}}", "warning")
-        return
-    while True:
+# Témoin du feeder, publié sur :8080 (`audio_feed`). Sans lui, un flux 100 % silence et un flux
+# sain affichaient les MÊMES compteurs (av_ecrit_audio_ms avance dans les deux cas) : la panne
+# n'était visible qu'à l'oreille. `silence_ms` qui croît pendant que le bus a du son = feeder décroché.
+_afeed = {{"real_ms": 0, "silence_ms": 0, "gap_ms": 0, "rebased_ms": 0, "reader": False,
+           "lag_ms": None, "gen": 0}}
+metrics["audio_feed"] = _afeed if AUDIO_ENABLED else None   # même objet : à jour sans recopie
+
+
+def _fifo_open_writer(gen):
+    """Ouvre en écriture le fifo de l'encodeur `gen`, sans bloquer si ce dernier ne l'ouvre jamais
+    (ffmpeg mort avant d'atteindre son entrée audio) : O_NONBLOCK échoue en ENXIO tant qu'aucun
+    lecteur ne l'a ouvert — un ffmpeg BLOQUÉ dans son open() compte déjà comme lecteur. Rend un fd
+    BLOQUANT (la contre-pression de ffmpeg est voulue), ou None si la génération a changé."""
+    import fcntl
+    path = _fifo_path(gen)
+    while _av["gen"] == gen and not bus_error.is_set():
         try:
-            fifo = open(AUDIO_FIFO, "wb")   # rendez-vous : débloque quand ffmpeg ouvre la lecture
-        except Exception as e:
-            log(f"audio fifo open échec : {{e}}", "warning"); time.sleep(1); continue
-        log("audio fifo connecté à ffmpeg", "info")
-        # Borne la capacité du fifo audio à ~120 ms (par canaux de sortie) : pendant le pic CPU de
-        # démarrage de l'encodeur, ffmpeg lit le fifo en retard → l'audio s'y empile → transitoire de
-        # retard. Le blocage (write bloquant + fifo borné) crée un BACKPRESSURE qui limite ce que
-        # ffmpeg ingère. F_SETPIPE_SZ=1031 (min 4 Ko). NB : f32le = 4 o/sample (1,33× le s24be).
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            time.sleep(0.01); continue
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl & ~os.O_NONBLOCK)
+        # Capacité bornée à ~120 ms : au-delà, l'audio tamponné dans le tube est de la latence.
         try:
-            import fcntl
-            _fsz = max(4096, int(0.12 * OUT_CHANNELS * A_SAMPLE_RATE * A_BYTES_PER_SAMPLE))
-            fcntl.fcntl(fifo.fileno(), 1031, _fsz)
+            fcntl.fcntl(fd, 1031, max(4096, int(0.12 * OUT_CHANNELS * A_SAMPLE_RATE
+                                                * A_BYTES_PER_SAMPLE)))   # F_SETPIPE_SZ
         except Exception:
             pass
-        # Entrée audio = FLUX MXL de samples float32 (bobimxl.AudioReader), lu GAPLESS : on suit une
-        # position `pos` (index sample) qui démarre à head et avance par blocs de 1 ms. Décrochage
-        # (samples tombés de l'anneau) → resync sur head. Si pas de samples frais : SILENCE cadencé
-        # (jamais starver ffmpeg → la vidéo continue). Latence = (now_tai − lastWriteTime).
-        ar = None; pos = None
-        last_ar_try = 0.0
-        sil_start = time.monotonic(); sil_written = 0
+        return fd
+    return None
+
+
+def _fifo_write(fd, b):
+    mv = memoryview(b)
+    while mv:
+        n = os.write(fd, mv)
+        mv = mv[n:]
+
+
+def audio_feeder():
+    while True:
+        gen = _av["gen"]
+        fd = _fifo_open_writer(gen) if gen else None
+        if fd is None:
+            time.sleep(0.05); continue
+        log("audio fifo connecté à ffmpeg (encodeur n°%d)" % gen, "info")
+        _afeed["gen"] = gen
+        _afeed["webrtc_comp_ms"] = _webrtc_comp_ms(_has_ts(), _has_webrtc())
+        ar = None; last_ar_try = 0.0; last_stale_chk = 0.0
         try:
-            while True:
+            # Ancre : posée par la 1ʳᵉ écriture vidéo de CET encodeur (avant qu'elle ne bloque).
+            t_wait = time.monotonic()
+            while _av["anchor_ns"] is None and _av["gen"] == gen and time.monotonic() - t_wait < 5.0:
+                time.sleep(0.002)
+            if _av["gen"] != gen:
+                continue
+            anchor = _av["anchor_ns"] if _av["anchor_ns"] is not None else bobimxl.now_tai()
+            pos = _tai_samples(anchor) - _webrtc_comp_ms(_has_ts(), _has_webrtc()) * (A_SAMPLE_RATE // 1000)
+            skip_seen = _av["skip_ns"]
+            off_st = {{"off": 0, "cand": None}}   # décalage source/grille ADOPTÉ (cf. _src_offset_update)
+            head_prev = None; head_t = 0.0; bad_reads = 0; reopen_n = 0
+            while _av["gen"] == gen:
                 if bus_error.is_set():
                     break
+                sk = _av["skip_ns"]
+                if sk != skip_seen:        # la vidéo a sauté des créneaux → l'audio saute autant
+                    pos += _tai_samples(sk - skip_seen); skip_seen = sk
                 if ar is None and (time.monotonic() - last_ar_try) > 1.0:
                     last_ar_try = time.monotonic()
                     try: ar = bobimxl.AudioReader(inst, AUDIO_SHM)
                     except Exception: ar = None
-                    pos = None
-                wrote_real = False
+                    _afeed["reader"] = ar is not None
+                head = None
                 if ar is not None:
                     try:
-                        head = ar.head_index()
+                        h = ar.head_index()
+                        head = None if h == bobimxl.MXL_UNDEFINED_INDEX else int(h)
                     except Exception:
                         try: ar.close()
                         except Exception: pass
-                        ar = None; head = bobimxl.MXL_UNDEFINED_INDEX
-                    if ar is not None and ar.reopen_if_head_stale(on_reopen=lambda s_, n: log(
-                            f"flux audio MXL {{AUDIO_SHM}} : lecteur PÉRIMÉ (head figé depuis "
-                            f"{{s_:.1f}} s), reconnexion (tentative {{n}})"
-                            + (" → Instance DÉDIÉE" if n >= 2 else ""), "warning")):
-                        # ⚠ un flux réellement MUET a un head qui AVANCE (le writer comble en
-                        # silence) : un head figé n'est pas du silence, c'est un décrochage.
-                        pos = None
-                        head = bobimxl.MXL_UNDEFINED_INDEX
-                    if ar is not None and head != bobimxl.MXL_UNDEFINED_INDEX:
-                        if pos is None:
-                            pos = head
-                        with _amap_lock:
-                            idx = list(_amap["slot_src"])
-                        guard = 0
-                        while pos <= head and guard < 512:
-                            r = ar.read_from(pos, A_BLOCK)
-                            if r is None:
-                                if pos < head:      # samples tombés de l'anneau → resync au plus récent
-                                    pos = head; continue
-                                break               # head pas encore complet → on attend
-                            _origine_note("audio")
-                            _ecrit["audio"] += A_BLOCK
-                            _ecriture_maj()
-                            fifo.write(_remap(r, idx))
-                            pos += A_BLOCK; wrote_real = True; guard += 1
-                        if wrote_real:
-                            fifo.flush()            # BrokenPipe → handler externe
-                            # ⚠ `lastWriteTime` n'est JAMAIS mis à jour sur un flux AUDIO MXL
-                            # (seuls les flux à GRAINS le bumpent) : la latence calculée dessus
-                            # tombait toujours hors bornes et `inputs_latency_ms` publiait None
-                            # pour l'audio DEPUIS TOUJOURS. La fraîcheur audio se lit sur
-                            # l'avancée de `head_index`, qui est une coordonnée TAI d'échantillon.
-                            # Ce n'est pas cosmétique : c'est l'âge du contenu qu'on donne à
-                            # l'encodeur, à comparer à celui de la vidéo (`lat_in`). Une
-                            # DIFFÉRENCE entre les deux part telle quelle dans le flux émis,
-                            # puisque ffmpeg apparie trame 0 et échantillon 0.
-                            lat = (bobimxl.now_tai() * A_SAMPLE_RATE // 1_000_000_000
-                                   - pos) / float(A_SAMPLE_RATE // 1000)
-                            if 0 <= lat < 5000: lat_audio.push(lat)
-                            sil_start = time.monotonic(); sil_written = 0
-                if wrote_real:
-                    time.sleep(0.0005)
-                else:
-                    # Pas de samples frais — flux ABSENT *ou* source muette : silence cadencé
-                    # (~temps réel) pour ne JAMAIS starver ffmpeg → la vidéo continue quoi qu'il arrive.
-                    due = int((time.monotonic() - sil_start) * 1000)
-                    guard = 0
-                    while sil_written < due and guard < 1000:
-                        _origine_note("audio")
-                        _ecrit["audio"] += A_BLOCK
-                        fifo.write(SILENCE); sil_written += 1; guard += 1
-                    fifo.flush()
-                    time.sleep(0.004)
-        except (BrokenPipeError, ValueError):
+                        ar = None; _afeed["reader"] = False
+                    if ar is not None and time.monotonic() - last_stale_chk >= 1.0:
+                        last_stale_chk = time.monotonic()
+                        if ar.reopen_if_head_stale(on_reopen=lambda s_, n: log(
+                                f"flux audio MXL {{AUDIO_SHM}} : lecteur PÉRIMÉ (head figé depuis "
+                                f"{{s_:.1f}} s), reconnexion (tentative {{n}})"
+                                + (" → Instance DÉDIÉE" if n >= 2 else ""), "warning")):
+                            # ⚠ un flux réellement MUET a un head qui AVANCE (le writer comble en
+                            # silence) : un head figé n'est pas du silence, c'est un décrochage.
+                            head = None
+                tm = time.monotonic()
+                if head is not None and head != head_prev:
+                    head_prev = head; head_t = tm
+                alive = head is not None and (tm - head_t) < A_LATE / A_SAMPLE_RATE
+                now_s = _tai_samples(bobimxl.now_tai())
+                if head is not None and alive:
+                    old = off_st["off"]
+                    new = _src_offset_update(off_st, head, now_s, tm, A_OFFGRID, 0.5, A_SAMPLE_RATE)
+                    if new != old:
+                        pos += new - old
+                        _afeed["rebased_ms"] = round(new / (A_SAMPLE_RATE / 1000.0), 1)
+                        log(f"flux audio {{AUDIO_SHM}} : ligne d'index à {{new / A_SAMPLE_RATE:+.3f}} s de "
+                            f"la grille TAI — suivi sur sa propre ligne", "warning")
+                src_off = off_st["off"]
+                if head is not None:
+                    _afeed["head_ahead_ms"] = round((head - pos) / (A_SAMPLE_RATE / 1000.0), 1)
+                    _afeed["head_vs_clock_ms"] = round((head - now_s) / (A_SAMPLE_RATE / 1000.0), 1)
+                with _amap_lock:
+                    idx = list(_amap["slot_src"])
+                n = 0; real = 0
+                while n < A_BATCH:
+                    act = _audio_step(pos, head, now_s, src_off, A_BLOCK, A_LATE, alive)
+                    if act == "wait":
+                        break
+                    r = ar.read_from(pos, A_BLOCK) if (act == "read" and ar is not None) else None
+                    if r is not None:
+                        _fifo_write(fd, _remap(r, idx)); real += 1; _afeed["real_ms"] += 1
+                        bad_reads = 0; reopen_n = 0
+                    else:
+                        # "read" sans données = bloc sorti de l'anneau (encodeur en retard) ; sinon
+                        # source absente. Dans les deux cas : silence À CETTE position.
+                        _fifo_write(fd, SILENCE)
+                        _afeed["gap_ms" if act == "read" else "silence_ms"] += 1
+                        if act == "read" and head - pos < A_SAMPLE_RATE // 10:
+                            bad_reads += 1     # bloc RÉCENT illisible : le lecteur, pas l'anneau
+                    _origine_note("audio")
+                    _ecrit["audio"] += A_BLOCK
+                    pos += A_BLOCK; n += 1
+                if bad_reads >= 200 and ar is not None:
+                    # Tête qui avance, blocs de moins de 100 ms illisibles pendant 200 ms : lecteur
+                    # accroché à une génération morte dont la tête suit l'horloge (réplique RDMA
+                    # détruite puis recréée). La garde « tête figée » ne le voit pas.
+                    bad_reads = 0; reopen_n += 1
+                    try:
+                        # 2ᵉ essai : Instance DÉDIÉE (le cache de la nôtre peut retenir l'orphelin)
+                        nre = ar.reopen(dedicated=reopen_n >= 2)
+                        log(f"flux audio MXL {{AUDIO_SHM}} : tête vivante mais blocs récents illisibles "
+                            f"— lecteur rouvert (tentative {{nre}})", "warning")
+                    except Exception:
+                        try: ar.close()
+                        except Exception: pass
+                        ar = None; _afeed["reader"] = False
+                if n:
+                    _ecriture_maj()
+                if real:
+                    # Âge du contenu donné à l'encodeur (position écrite vs horloge, ms). La
+                    # fraîcheur audio ne se lit pas sur lastWriteTime : les writers audio ne le
+                    # bumpent jamais (cf. mxl-audio-no-lastwritetime).
+                    lat = (now_s + src_off - pos) / (A_SAMPLE_RATE / 1000.0)
+                    if 0 <= lat < 5000: lat_audio.push(lat)
+                    _afeed["lag_ms"] = round(lat, 1)
+                if not n:
+                    time.sleep(0.001)
+        except (BrokenPipeError, OSError, ValueError):
             log("audio fifo cassé (ffmpeg redémarré ?), reconnexion...", "warning")
         except Exception as e:
-            log(f"audio feeder erreur : {{e}}", "warning")
+            log(f"audio feeder erreur : {{type(e).__name__}}: {{e}}", "warning")
         finally:
-            for c in (fifo, ar):
+            for c in (ar,):
                 try:
                     if c: c.close()
                 except Exception: pass
-            time.sleep(1)
+            try: os.close(fd)
+            except Exception: pass
+            _afeed["reader"] = False
+            time.sleep(0.05)
+
 
 if AUDIO_ENABLED:
     threading.Thread(target=audio_feeder, daemon=True).start()
@@ -1145,6 +1350,21 @@ def _hot_scan(r):
         f"(grain {{WIDTH}}x{{GRAIN_H}})", "info")
     return True
 
+def _grain_tai(r, index):
+    """Instant TAI du CONTENU d'un grain : sa coordonnée sur la grille du flux, sinon l'instant
+    de sa dernière écriture. Sert d'ancre à l'audio (cf. _anchor_from_hint)."""
+    try:
+        t = r.index_time_ns(index)
+        if t:
+            return t
+    except Exception:
+        pass
+    try:
+        return r.last_write_time() or None
+    except Exception:
+        return None
+
+
 def _hot_restart(proc):
     try: proc.stdin.close()
     except Exception: pass
@@ -1165,7 +1385,8 @@ def _run_hot():
     # (pushed_fps ≈ FPS de sortie). dropped_stale_fps reste 0 : le mode moniteur répète la
     # dernière frame à cadence fixe, il ne jette JAMAIS pour péremption.
     diag_seen = diag_pushed = 0; diag_win = time.time()
-    interval = 1.0 / FPS; next_t = time.time()
+    # Cadence ANCRÉE (cf. _video_due) : la trame k part à v_t0 + k/FPS, par encodeur (`v_gen`).
+    v_gen = None; v_t0 = None; v_pushed = 0; last_tai = None
     log(f"hot-input actif {{WIDTH}}x{{HEIGHT}}@{{FPS}} — source initiale {{_hot_cur['shm']!r}}", "info")
     while True:
         if bus_error.is_set():
@@ -1210,9 +1431,11 @@ def _run_hot():
                                     and len(g0[2]) == GRAIN_SIZE and len(g1[2]) == GRAIN_SIZE):
                                 last_frame = _weave_fields(bytes(g0[2]), bytes(g1[2]))
                                 last_index = 2 * ff + 1
+                                last_tai = _grain_tai(r, 2 * ff)
                         else:
                             last_frame = bytes(got[2])       # grain = trame planar complète
                             last_index = fi
+                            last_tai = _grain_tai(r, fi)
                         age_us = (bobimxl.now_tai() - r.last_write_time()) // 1000
                         if 0 <= age_us < 5_000_000: lat_in.push(age_us / 1000.0)
             except Exception:
@@ -1221,13 +1444,28 @@ def _run_hot():
                 except Exception: pass
                 r = None; cur_name = None; last_frame = None
         now = time.time()
-        if now >= next_t:
+        if v_gen != _av["gen"]:
+            v_gen = _av["gen"]; v_t0 = None; v_pushed = 0     # encodeur neuf → trame 0
+        if v_t0 is None or now >= v_t0 + v_pushed / FPS:
             if ffmpeg_out.poll() is not None:
                 _refresh_metrics(up=False); time.sleep(0.3); ffmpeg_out = creer_ffmpeg()
+                continue
+            if v_t0 is None:
+                v_t0 = now
+            todo, skip = _video_due(now - v_t0, FPS, v_pushed, 2 * FPS)
+            if skip:
+                v_pushed += skip
+                _av["skip_ns"] += int(skip * 1_000_000_000 // FPS)
+                log(f"hot-input : encodeur en retard de {{skip}} trames — créneaux sautés "
+                    f"(l'audio saute la même durée, le calage est conservé)", "warning")
             buf = last_frame if last_frame is not None else black
+            _av["hint_ns"] = last_tai if last_frame is not None else None
             try:
-                ffmpeg_out.stdin.write(buf); ffmpeg_out.stdin.flush()
-                win_cnt += 1; diag_pushed += 1
+                # Rattrapage : la MÊME image répétée, pour que la trame k reste à v_t0 + k/FPS.
+                for _ in range(todo):
+                    ffmpeg_out.stdin.write(buf)
+                    v_pushed += 1; win_cnt += 1; diag_pushed += 1
+                ffmpeg_out.stdin.flush()
                 _el = time.time() - win_start
                 if _el >= 1.0:
                     _refresh_metrics(fps=round(win_cnt / _el, 1), up=True)
@@ -1241,8 +1479,6 @@ def _run_hot():
                 metrics["pushed_fps"]        = round(diag_pushed / _eld, 1)
                 metrics["dropped_stale_fps"] = 0.0
                 diag_seen = diag_pushed = 0; diag_win = time.time()
-            next_t += interval
-            if next_t < now: next_t = now + interval
         time.sleep(0.001)
 
 # Géométrie d'entrée toujours résolue depuis le shm réel (corrige une config périmée,
