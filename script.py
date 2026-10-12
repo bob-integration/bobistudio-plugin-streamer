@@ -900,7 +900,14 @@ def _src_offset_update(st, head, now_s, t, tol, settle_s, sr):
 
 
 # ─── Compensation du transport WebRTC ──────────────────────────────────────────────────────────
-# La passerelle (MediaMTX 1.9) n'utilise PAS les pts ni les SR RTCP de ffmpeg : elle date chaque
+# ⚠ Ne vaut QUE pour une passerelle qui date à l'arrivée. Depuis services/webrtc_gateway 0.3.0
+# (MediaMTX 1.21.1, `useAbsoluteTimestamp`), la passerelle garde la date NTP des SR de ffmpeg :
+# la vue navigateur = calage des pts, la compensation tombe à 0. Ce qu'elle applique RÉELLEMENT est
+# injecté par le hook (`gateway_absolute_timestamp` sur chaque destination WebRTC, depuis le réglage
+# `webrtc_absolute_timestamp`, lui-même écrit d'après le :8080 de la passerelle). Mesuré 2026-10-12
+# (avsync, client RTSP/RTCP, 4 redémarrages) : compensation 0 → −27…+13 ms en NVENC comme en x264 ;
+# compensation 90 gardée sur la passerelle horodatée → +13…+74 ms.
+# Historique — la passerelle (MediaMTX 1.9) n'utilise PAS les pts ni les SR RTCP de ffmpeg : elle date chaque
 # paquet reçu à son HEURE D'ARRIVÉE, et c'est cette date qui part dans les SR vers le navigateur —
 # lequel cale l'image et le son dessus. Le calage vu par le navigateur = calage des pts + (retard
 # d'émission de la vidéo − celui de l'audio). Mesuré le 2026-10-11 (NVENC p4/ull, 1080p25 8 Mb/s,
@@ -912,8 +919,17 @@ def _src_offset_update(st, head, now_s, t, tol, settle_s, sr):
 WEBRTC_AV_COMP_MS = 90
 
 
-def _webrtc_comp_ms(has_ts, has_webrtc):
+def _webrtc_comp_ms(has_ts, has_webrtc, gateway_abs=False):
+    if gateway_abs:              # la passerelle transmet les dates de l'encodeur : rien à corriger
+        return 0
     return WEBRTC_AV_COMP_MS if (has_webrtc and not has_ts) else 0
+
+
+def _gateway_abs_ts():
+    """Vrai si TOUTES les destinations WebRTC actives passent par une passerelle à horodatage absolu
+    (une seule passerelle qui date à l'arrivée suffit à garder l'ancienne compensation)."""
+    w = [d for d in DESTINATIONS if d.get("type") == "webrtc" and d.get("enabled") and d.get("ingest_url")]
+    return bool(w) and all(d.get("gateway_absolute_timestamp") for d in w)
 
 
 def _video_due(elapsed_s, fps, pushed, max_behind):
@@ -1033,7 +1049,7 @@ def audio_feeder():
             time.sleep(0.05); continue
         log("audio fifo connecté à ffmpeg (encodeur n°%d)" % gen, "info")
         _afeed["gen"] = gen
-        _afeed["webrtc_comp_ms"] = _webrtc_comp_ms(_has_ts(), _has_webrtc())
+        _afeed["webrtc_comp_ms"] = _webrtc_comp_ms(_has_ts(), _has_webrtc(), _gateway_abs_ts())
         ar = None; last_ar_try = 0.0; last_stale_chk = 0.0
         try:
             # Ancre : posée par la 1ʳᵉ écriture vidéo de CET encodeur (avant qu'elle ne bloque).
@@ -1043,7 +1059,7 @@ def audio_feeder():
             if _av["gen"] != gen:
                 continue
             anchor = _av["anchor_ns"] if _av["anchor_ns"] is not None else bobimxl.now_tai()
-            pos = _tai_samples(anchor) - _webrtc_comp_ms(_has_ts(), _has_webrtc()) * (A_SAMPLE_RATE // 1000)
+            pos = _tai_samples(anchor) - _webrtc_comp_ms(_has_ts(), _has_webrtc(), _gateway_abs_ts()) * (A_SAMPLE_RATE // 1000)
             skip_seen = _av["skip_ns"]
             off_st = {{"off": 0, "cand": None}}   # décalage source/grille ADOPTÉ (cf. _src_offset_update)
             head_prev = None; head_t = 0.0; bad_reads = 0; reopen_n = 0

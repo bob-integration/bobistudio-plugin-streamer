@@ -1,7 +1,11 @@
 {
-  "version": "0.19.0",
+  "version": "0.19.1",
   "date": "2026-10-12",
   "changes": {
+    "Compensation A/V selon la passerelle (0.19.1)": [
+      "La compensation fixe de 90 ms (WEBRTC_AV_COMP_MS) n'est plus appliquée quand la passerelle WebRTC garde l'horodatage de l'encodeur (services/webrtc_gateway 0.3.0, MediaMTX 1.21.1, `useAbsoluteTimestamp`). Le hook injecte ce que la passerelle applique réellement (`gateway_absolute_timestamp`) ; une passerelle qui date encore à l'arrivée garde la compensation. Visible sur :8080 : `audio_feed.webrtc_comp_ms`.",
+      "MESURÉ 2026-10-12 (avsync, client RTSP qui recale par les SR comme un navigateur, 4 redémarrages chacun) : NVENC −6/−26/−26/−27 ms, x264 −6/−26/+13/−6 ms (avant, MediaMTX 1.9 + 90 ms : NVENC −13/+25/+38/+5, x264 −21/−17/+27/−4 ; passerelle horodatée mais 90 ms gardés : +13…+74)."
+    ],
     "Son du moniteur WebRTC : silence, avance de ~0,45 s, irrégularité (0.19.0)": [
       "★★★ MESURÉ (2026-10-11, moniteur NVENC, avsync + player sur dl360-1 → réplique RDMA dell-1) : après 7 redéploiements sur 7 le son sortait 100 % SILENCE alors que le bus et sa réplique étaient intacts. Cause : le feeder comblait les creux par un silence cadencé sur SA propre horloge ; pendant l'init de l'encodeur (fifo plein ≈ 1 s) il accumulait une dette de silence ≥ l'anneau audio (~0,3 s). Écrire B ms de silence prend B ms quand ffmpeg consomme au temps réel : la dette ne se résorbait jamais, la position tombait hors de l'anneau à chaque passage, on se recalait sur la tête, rien n'y était complet → re-silence. Pour toujours.",
       "CORRECTIF — ANCRE A/V : l'échantillon n écrit est celui du bus d'index A0 + n, A0 = instant TAI du contenu de la trame 0 de l'encodeur. Un bloc absent (source coupée, anneau dépassé) devient du silence À SA POSITION ; une source VIVANTE en retard est attendue, jamais comblée d'avance. La vidéo du moniteur est cadencée sur t0 + k/fps (un retard d'encodeur se rattrape en répétant l'image ; au-delà de 2 s on saute des créneaux et l'audio saute la même durée).",

@@ -112,6 +112,7 @@ def _resolve_webrtc(params, settings):
         path = d.get("path") or ""
         if not (enabled and gw_ip and path):
             d.pop("ingest_url", None)
+            d.pop("gateway_absolute_timestamp", None)
             continue
         if proto == "whip":
             d["ingest_url"] = f"http://{gw_ip}:{http_p}/{path}/whip"
@@ -119,3 +120,6 @@ def _resolve_webrtc(params, settings):
             d["ingest_url"] = f"rtsp://{gw_ip}:{rtsp_p}/{path}"
         d["whep_url"]  = f"http://{gw_ip}:{http_p}/{path}/whep"
         d["embed_url"] = f"http://{gw_ip}:{http_p}/{path}"
+        # Ce que la passerelle APPLIQUE (rapport :8080, persisté par services/webrtc_gateway) : avec
+        # l'horodatage absolu, le script retire sa compensation A/V fixe (cf. WEBRTC_AV_COMP_MS).
+        d["gateway_absolute_timestamp"] = bool(settings.get("webrtc_absolute_timestamp"))
