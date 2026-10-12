@@ -55,6 +55,14 @@ La source audio se câble via la page **Câbles** (port d'entrée audio séparé
 | **Adaptation auto** | Détecte la résolution d'entrée et l'adapte — recâbler déclenche un redéploiement |
 | **Bascule sans coupure** | Format figé, changement de source de même résolution sans coupure |
 
+## Moniteur (panneau Monitoring)
+
+Le moniteur de chaque utilisateur est un streamer qui pousse une seule destination WebRTC. Son réglage est fait pour être **vu et entendu dans un navigateur** :
+
+- **Son calé sur l'image** : l'audio est placé sur la même ligne de temps que la vidéo, quelle que soit la source ; il ne reste plus de silence après un changement de source ni d'avance de près d'une demi-seconde. Le temps de transport de la passerelle WebRTC est compensé (90 ms, appliqué quand WebRTC est la seule destination) ; mesuré dans le navigateur : écart de quelques dizaines de ms.
+- **Image 4:2:0** : la sortie est en yuv420p (le 4:4:4 n'est pas lu de façon fiable par les navigateurs), y compris en encodage matériel.
+- **Témoin du son** : le port :8080 publie `audio_feed` (échantillons réellement écrits, silence comblé, source vivante ou non). Un flux muet par absence de source se distingue ainsi d'un flux muet par panne. `av_offset_ms` reste disponible pour un décalage constant.
+
 ## Lien client
 
 Dès qu'une destination WebRTC est active, un **lien client** peut être généré : page publique brandée lisible dans n'importe quel navigateur, sans compte.
