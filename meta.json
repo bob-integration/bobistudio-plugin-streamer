@@ -1,7 +1,10 @@
 {
-  "version": "0.19.1",
-  "date": "2026-10-12",
+  "version": "0.19.2",
+  "date": "2026-10-16",
   "changes": {
+    "Les bouches-trous amont ne sont plus composités comme des images (0.19.2)": [
+      "★ TÉMOIN `invalid_grains` SUR :8080. Un grain BOUCHE-TROU posé par un producteur qui saute des index revenait MXL_STATUS_OK avec `validSlices = 0`, et notre idiome `int(gi.validSlices or k)` retournait ce zéro en « k tranches valides » : le bouche-trou était composité comme une image, à pleine confiance. Écarté désormais dans `bobimxl` (le seul point que toute la flotte traverse), et le compte publié par flux sur :8080 — cadence, index et statut de lecture restant tous PARFAITS pendant l'épisode, ce compteur en est le seul témoin."
+    ],
     "Compensation A/V selon la passerelle (0.19.1)": [
       "La compensation fixe de 90 ms (WEBRTC_AV_COMP_MS) n'est plus appliquée quand la passerelle WebRTC garde l'horodatage de l'encodeur (services/webrtc_gateway 0.3.0, MediaMTX 1.21.1, `useAbsoluteTimestamp`). Le hook injecte ce que la passerelle applique réellement (`gateway_absolute_timestamp`) ; une passerelle qui date encore à l'arrivée garde la compensation. Visible sur :8080 : `audio_feed.webrtc_comp_ms`.",
       "MESURÉ 2026-10-12 (avsync, client RTSP qui recale par les SR comme un navigateur, 4 redémarrages chacun) : NVENC −6/−26/−26/−27 ms, x264 −6/−26/+13/−6 ms (avant, MediaMTX 1.9 + 90 ms : NVENC −13/+25/+38/+5, x264 −21/−17/+27/−4 ; passerelle horodatée mais 90 ms gardés : +13…+74)."
