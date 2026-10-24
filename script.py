@@ -98,6 +98,9 @@ SLICE_LINES = max(1, int(CONFIG.get("slice_lines") or 36))   # informatif — le
 
 SHM_PATH = f"/dev/shm/{{SHM_NAME}}"
 inst = bobimxl.Instance()   # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl) — flux vidéo d'entrée
+# Instance servant les LECTEURS VIDÉO. Renouvelable (cf. _renouveler_instance_video) pour
+# obtenir un cache vierge sans jamais balayer le domaine ; l'AudioReader, lui, garde `inst`.
+_inst_video = [inst]
 # ── Sémantique format : le format CONFIGURÉ est la SORTIE souhaitée — TOUJOURS honorée,
 # jamais ignorée ni modifiée. L'ENTRÉE (signal reçu) est ce qui arrive réellement dans le
 # shm ; si elle diffère, l'encodeur l'AJUSTE (mise à l'échelle + rééchantillonnage). ──
@@ -260,7 +263,7 @@ def _detect_dims():
     entrelacement compris. Attend que le flux existe."""
     while True:
         try:
-            r = bobimxl.Reader(inst, SHM_NAME)
+            r = bobimxl.Reader(_inst_video[0], SHM_NAME)
             f = r.format(); r.close()
             if f:
                 if _wait_warned[0]:
@@ -1182,7 +1185,7 @@ def ouvrir_shm():
     """Ouvre le flux vidéo MXL d'entrée (Reader). Attend qu'il existe."""
     while True:
         try:
-            r = bobimxl.Reader(inst, SHM_NAME)
+            r = bobimxl.Reader(_inst_video[0], SHM_NAME)
             log(f"flux MXL ouvert : {{SHM_NAME}}", "info")   # source qui apparaît = événement
             _open_warned[0] = False
             return r
@@ -1196,12 +1199,31 @@ def fermer_shm(reader):
     try: reader.close()
     except Exception: pass
 
-def _gc_domain():
-    """GC ENTRE close et reopen (motif pyramide / moteur tx_reopen_if_stale) : sans GC un flux
-    recréé sous le même nom reste résolvable vers l'ORPHELIN périmé → le reopen retombe dessus
-    et la boucle gèle en silence (mesuré côté pyramide : 40 min de gel après recréation)."""
-    try: inst.garbage_collect()
-    except Exception: pass
+def _renouveler_instance_video():
+    """Repart sur une Instance NEUVE pour la lecture vidéo — cache vierge, résolution sur disque.
+
+    ★★ REMPLACE un `inst.garbage_collect()` (2026-10-24). Il fallait bien faire oublier
+    l'ORPHELIN entre close et reopen — sans quoi un flux recréé sous le même nom reste résolvable
+    vers la génération périmée et la boucle gèle en silence (40 min mesurées côté pyramide). Mais
+    le GC de libmxl est **global au DOMAINE** : il ne visait pas notre orphelin, il balayait aussi
+    les flux VIVANTS des autres processus. Dégâts mesurés : quatre flux du moteur 2110 détruits
+    sous leur producteur le 2026-08-19 ; et le 2026-10-24 sur r620-2, une réplique RDMA recréée
+    sous son récepteur, qui a continué d'écrire dans un inode délié — réplique vide pour toujours,
+    et ~850 ré-établissements par jour pour tenter de réparer ça. Or c'est très exactement un
+    `streamer` (l'encodeur de monitoring) qui tournait sur ce nœud.
+
+    Une Instance neuve obtient le même oubli SANS toucher au domaine. On ne ferme que les
+    Instances qu'on a soi-même créées : jamais `inst`, dont l'AudioReader se sert dans un autre
+    fil — la fermer sous lui invaliderait son handle."""
+    ancienne = _inst_video[0]
+    try:
+        _inst_video[0] = bobimxl.Instance()
+    except Exception as e:                      # échec de création : on garde l'ancienne
+        log(f"renouvellement d'Instance MXL impossible ({{e}}) — on garde la précédente", "warning")
+        return
+    if ancienne is not inst:
+        try: ancienne.close()
+        except Exception: pass
 
 def _neutral_tail(a, b, y_sz):
     """MODE TRANCHE — octets NEUTRES (noir) pour TERMINER une trame commencée dans le pipe,
@@ -1224,7 +1246,7 @@ _hot_cur  = {{"shm": SHM_NAME or ""}}
 def _open_named(name):
     """Reader MXL du flux `name`, ou None si absent (mode moniteur : source re-câblable)."""
     try:
-        return bobimxl.Reader(inst, name) if name else None
+        return bobimxl.Reader(_inst_video[0], name) if name else None
     except Exception:
         return None
 
@@ -1546,7 +1568,7 @@ while True:
     if bus_error.is_set():
         bus_error.clear()
         fermer_shm(reader)
-        _gc_domain()          # GC entre close et reopen (flux recréé sous le même nom)
+        _renouveler_instance_video()   # cache vierge entre close et reopen (JAMAIS un GC global)
         time.sleep(2)
         reader = ouvrir_shm()
         last_index = 0
@@ -1561,7 +1583,7 @@ while True:
         except Exception: pass
         time.sleep(0.3)
         fermer_shm(reader)
-        _gc_domain()          # GC entre close et reopen (flux recréé sous le même nom)
+        _renouveler_instance_video()   # cache vierge entre close et reopen (JAMAIS un GC global)
         ffmpeg_out = creer_ffmpeg()
         reader = ouvrir_shm()
         last_index = 0
@@ -1756,7 +1778,7 @@ while True:
     except Exception as e:
         log(f"Erreur ({{type(e).__name__}}): {{e}}, reconnexion...", "warning")
         fermer_shm(reader)
-        _gc_domain()          # GC entre close et reopen (flux recréé sous le même nom)
+        _renouveler_instance_video()   # cache vierge entre close et reopen (JAMAIS un GC global)
         time.sleep(2)
         reader = ouvrir_shm()
         last_index = 0
