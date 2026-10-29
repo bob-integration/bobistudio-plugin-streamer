@@ -514,6 +514,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
         # comblement d'un trou par le producteur — cadence, index et statut de lecture restent
         # tous parfaits pendant l'épisode. Calculé à la requête : aucun coût par trame.
         payload["invalid_grains"] = bobimxl.invalid_grains_report()
+        # Version RÉELLEMENT en cours (contrat :8080) : l'orchestrateur la compare à la base après un
+        # redéploiement et à chaque tour de surveillance — un processus resté sur l'ancienne version
+        # ne se voit nulle part ailleurs (Z8, 29/10).
+        payload["plugin_version"] = PLUGIN_VERSION
         with ffmpeg_log_lock: payload["ffmpeg_log"] = list(ffmpeg_log)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

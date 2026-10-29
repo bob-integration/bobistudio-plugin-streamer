@@ -1,7 +1,8 @@
 {
-  "version": "0.19.3",
-  "date": "2026-10-24",
+  "version": "0.19.4",
+  "date": "2026-10-29",
   "changes": {
+    "La version en cours est publiée sur :8080 (0.19.4)": "`plugin_version` figure désormais dans les métriques :8080. L'orchestrateur compare la version que le processus EXÉCUTE à celle qu'annonce la base, après chaque redéploiement et à chaque tour de surveillance : un processus resté sur l'ancienne version, invisible jusqu'ici, est signalé.",
     "La reconnexion d'une entrée ne balaie plus le domaine MXL (0.19.3)": "★ PLUS AUCUN BALAYAGE GLOBAL. Entre la fermeture et la réouverture d'une entrée, l'encodeur appelait le ramasse-miettes de libmxl pour faire oublier la génération périmée. Ce ramasse-miettes est GLOBAL AU DOMAINE : il ne visait pas notre orphelin, il emportait aussi les flux VIVANTS des autres processus du nœud — quatre flux du moteur 2110 détruits sous leur producteur le 19/08, et le 24/10 une copie RDMA recréée sous son récepteur, qui a ensuite écrit dans un fichier délié : copie vide pour toujours, et environ 850 tentatives de réparation par jour. La génération périmée est désormais oubliée en repartant sur une instance NEUVE, ce qui ne touche à rien d'autre.",
     "Les bouches-trous amont ne sont plus composités comme des images (0.19.2)": [
       "★ TÉMOIN `invalid_grains` SUR :8080. Un grain BOUCHE-TROU posé par un producteur qui saute des index revenait MXL_STATUS_OK avec `validSlices = 0`, et notre idiome `int(gi.validSlices or k)` retournait ce zéro en « k tranches valides » : le bouche-trou était composité comme une image, à pleine confiance. Écarté désormais dans `bobimxl` (le seul point que toute la flotte traverse), et le compte publié par flux sur :8080 — cadence, index et statut de lecture restant tous PARFAITS pendant l'épisode, ce compteur en est le seul témoin."
