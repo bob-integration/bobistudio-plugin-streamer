@@ -8,10 +8,11 @@
     "oklch": "0.77 0.06 50"
   },
   "deploy_order": 2,
-  "version": "0.19.4",
+  "version": "0.19.5",
   "runtime": "docker",
   "adapts_input": true,
   "image": "media",
+  "_resources_mesure": "MÉMOIRE (relevée le 2026-10-30, dl360-1 #1210, 1 destination webrtc, h264 1080p25, 1 piste audio) : 271 à 298 Mio pour une limite déclarée de 1024 (29 %), seul relevé qui bouge pendant la fenêtre. r620-2 #1207 (même configuration) 273-274 Mio ; dell-1 #1131 et #1196 (1 destination, audio coupé, script ARRÊTÉ par le reaper du monitoring) 169 et 202 Mio, non retenus. Plusieurs destinations (udp + srt + webrtc, branches du tee) et le h265 ne sont pas relevés. Méthode : `memory.current` du cgroup, tel que l'orchestrateur le relève à chaque tour sur l'agent (:8081/stats → champ `mem_used`), lu en lecture seule par GET /api/containers : 21 relevés à 10 s d'écart entre 13:17 et 13:21. La part shmem (bus MXL mappé, ≈ 1/5 sur decklink_io) n'est PAS disponible par cette voie ; la limite effectivement posée au conteneur (memory.max) non plus — le rapport est donc pris sur le chiffre DÉCLARÉ. ⚠ CONFIGURATION LÉGÈRE : ce relevé dit que CETTE configuration tient, pas que 1024 Mio paie une configuration pleine ; la limite n'a été ni baissée ni montée (chantier de documentation, 2026-10-30). À REMESURER sur une configuration pleine, en lisant memory.stat (anon / shmem / pgscan_direct) du cgroup, avant de toucher au chiffre.",
   "resources": {
     "cores": 4,
     "memory": 1024,
