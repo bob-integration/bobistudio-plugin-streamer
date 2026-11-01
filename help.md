@@ -38,11 +38,11 @@ L'encodeur réellement actif et la disponibilité de la pile matérielle sont pu
 
 ## Calage audio/vidéo (`av_offset_ms`)
 
-Décalage manuel de l'audio par rapport à la vidéo, en millisecondes, signé : positif retarde
-l'audio, négatif l'avance. Utile quand la chaîne en amont introduit un décalage connu
-(traitement audio externe, latence d'un encodeur source) que le streamer doit compenser
-avant diffusion. Le délai effectivement appliqué est publié sur `:8080`
-(`av_offset_ms`). Sans effet si l'audio est désactivé.
+⚠ **Non réglable aujourd'hui.** Le script sait appliquer un décalage manuel de l'audio par rapport
+à la vidéo (millisecondes, signé : positif retarde l'audio, négatif retarde la vidéo), mais aucune
+page ne le propose et la normalisation des paramètres faite par l'orchestrateur ne le conserve pas :
+il vaut donc toujours 0. Le délai effectivement appliqué est publié sur `:8080` (`av_offset_ms`) —
+c'est là qu'on vérifie qu'il vaut bien 0.
 
 ## Audio
 
@@ -61,7 +61,7 @@ Le moniteur de chaque utilisateur est un streamer qui pousse une seule destinati
 
 - **Son calé sur l'image** : l'audio est placé sur la même ligne de temps que la vidéo, quelle que soit la source ; il ne reste plus de silence après un changement de source ni d'avance de près d'une demi-seconde. Le temps de transport de la passerelle WebRTC est compensé (90 ms, appliqué quand WebRTC est la seule destination) ; mesuré dans le navigateur : écart de quelques dizaines de ms.
 - **Image 4:2:0** : la sortie est en yuv420p (le 4:4:4 n'est pas lu de façon fiable par les navigateurs), y compris en encodage matériel.
-- **Témoin du son** : le port :8080 publie `audio_feed` (échantillons réellement écrits, silence comblé, source vivante ou non). Un flux muet par absence de source se distingue ainsi d'un flux muet par panne. `av_offset_ms` reste disponible pour un décalage constant.
+- **Témoin du son** : le port :8080 publie `audio_feed` (échantillons réellement écrits, silence comblé, source vivante ou non). Un flux muet par absence de source se distingue ainsi d'un flux muet par panne.
 
 ## Lien client
 
@@ -71,7 +71,7 @@ Dès qu'une destination WebRTC est active, un **lien client** peut être génér
 
 Sur une source publiée en mode tranche MXL (moteur 2110, traitements en tranche…), le streamer peut alimenter l'encodeur **au fil de l'arrivée des bandes** au lieu d'attendre l'image complète : la latence bout-en-bout (ex. monitoring WebRTC) baisse d'environ une image (~18 ms en 50p).
 
-- **Opt-in** : paramètre `slice_mode` (désactivé par défaut — comportement inchangé). Le réglage est conservé par l'éditeur Streams.
+- **Interrupteur global** : **Réglages → MXL**, « Trancher toute la chaîne » (éteint par défaut). Pas de réglage par conteneur dans l'interface ; la bascule prend effet au (re)déploiement. Une valeur posée sur le conteneur est conservée par l'éditeur Streams.
 - Source entrelacée ou flux amont non tranché → comportement classique automatique.
 - L'encodage, l'audio et les destinations ne changent pas.
 

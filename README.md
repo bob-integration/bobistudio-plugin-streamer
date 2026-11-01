@@ -31,9 +31,12 @@ bloquer : un défaut côté audio ne doit pas arrêter la vidéo.
 
 ## Ce qu'il faut savoir
 
-**Le calage audio/vidéo se décide au démarrage de ffmpeg**, et il varie d'un lancement à
-l'autre. Le réglage `av_offset_ms` corrige un décalage constant, pas cette variation. Deux
-programmes de mesure sont fournis pour l'observer plutôt que de l'estimer :
+**Le calage audio/vidéo se décide au démarrage de ffmpeg.** Jusqu'au 2026-10-11 il variait d'un
+lancement à l'autre ; depuis, le feeder audio est ancré sur la première trame vidéo, et la mesure
+donne des pts à 0 ± 20 ms (une image à 25p) sur 8 démarrages. Le script sait appliquer un décalage
+constant (`av_offset_ms`), mais ce réglage n'atteint pas le conteneur aujourd'hui : la normalisation
+des paramètres côté orchestrateur ne le conserve pas, et aucune page ne le propose. Deux
+programmes de mesure sont fournis pour observer le calage plutôt que de l'estimer :
 
 ```bash
 python3 tools/av_mesure_pts.py       # les pts vidéo et audio tels qu'ils sortent

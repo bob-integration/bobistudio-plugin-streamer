@@ -31,9 +31,12 @@ on the audio side must not stop the video.
 
 ## What to know
 
-**Audio/video alignment is decided when ffmpeg starts**, and it varies from one launch to the
-next. The `av_offset_ms` setting corrects a constant offset, not that variation. Two
-measurement programs are provided, to observe it rather than estimate it:
+**Audio/video alignment is decided when ffmpeg starts.** Until 2026-10-11 it varied from one
+launch to the next; since then the audio feeder is anchored on the first video frame, and the
+measurement gives pts at 0 ± 20 ms (one frame at 25p) over 8 start-ups. The script can apply a
+constant offset (`av_offset_ms`), but that setting does not reach the container today: the
+orchestrator's parameter normalisation drops it, and no page offers it. Two measurement programs
+are provided, to observe the alignment rather than estimate it:
 
 ```bash
 python3 tools/av_mesure_pts.py       # video and audio pts as they come out
