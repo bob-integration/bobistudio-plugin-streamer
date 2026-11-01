@@ -338,8 +338,8 @@ AUDIO_ENABLED = bool(AUDIO_CFG.get("enabled")) and bool(AUDIO_SHM)
 # retiré (media_ts audio biaisé + inefficace) ; (3) ⛔ « le transport WebRTC réaligne l'A/V tout
 # seul » était FAUX : la passerelle date les paquets à l'arrivée, un décalage de pts se retrouve
 # tel quel dans le navigateur (mesuré 2026-10-11, cf. WEBRTC_AV_COMP_MS).
-# ⚠ `av_offset_ms` n'atteint PAS le script aujourd'hui : la liste blanche de
-# app/scripts.normalize_worker_udp_params ne le conserve pas (constaté 2026-10-11).
+# Réglage déclaré au manifeste (config_schema, ±2000 ms) depuis 0.19.6. Avant, la liste blanche de
+# app/scripts.normalize_worker_udp_params le jetait : il n'atteignait jamais le script (2026-10-11).
 _sync_v_mts = [0]
 A_CHUNK_NS  = 1000000
 
@@ -724,7 +724,8 @@ def creer_ffmpeg():
     # Calage A/V MANUEL (réglage `av_offset_ms`, signé, ms) appliqué via les PTS : >0 → retarder
     # l'audio (adelay, cf. _audio_plan) ; <0 → retarder la vidéo (-itsoffset sur pipe:0, pas de
     # resampler côté vidéo donc l'itsoffset survit). 0 = aucun décalage (défaut). N'agit que sur les
-    # sorties qui honorent les PTS (mpegts/fichier) ; le WebRTC réaligne lui-même l'A/V (RTCP).
+    # sorties qui honorent les PTS (mpegts/fichier) et sur le WebRTC, qui ne réaligne RIEN : la
+    # passerelle date les paquets à l'arrivée (mesuré 2026-10-11, cf. l'en-tête du calage plus haut).
     av = int(CONFIG.get("av_offset_ms") or 0) * 1000000 if AUDIO_ENABLED else 0
     a_delay_ms = int(round(av / 1e6)) if av > 0 else 0
     metrics["av_offset_ms"] = int(round(av / 1e6))        # délai appliqué (signé), exposé sur :8080

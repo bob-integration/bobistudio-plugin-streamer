@@ -38,11 +38,12 @@ L'encodeur réellement actif et la disponibilité de la pile matérielle sont pu
 
 ## Calage audio/vidéo (`av_offset_ms`)
 
-⚠ **Non réglable aujourd'hui.** Le script sait appliquer un décalage manuel de l'audio par rapport
-à la vidéo (millisecondes, signé : positif retarde l'audio, négatif retarde la vidéo), mais aucune
-page ne le propose et la normalisation des paramètres faite par l'orchestrateur ne le conserve pas :
-il vaut donc toujours 0. Le délai effectivement appliqué est publié sur `:8080` (`av_offset_ms`) —
-c'est là qu'on vérifie qu'il vaut bien 0.
+Réglage **« Calage audio/vidéo (ms) »** de la configuration du conteneur (depuis 0.19.6) : décalage
+constant entre le son et l'image, en millisecondes, signé, de −2000 à +2000. Positif retarde l'audio,
+négatif retarde la vidéo. Il sert quand l'image traverse un traitement qui la retarde (mélangeur,
+correcteur) alors que le son arrive en direct. 0 = aucun décalage (défaut). Appliqué au
+redéploiement, pilotable par les macros comme tout réglage de configuration. Sans effet si l'audio
+est désactivé. Le délai effectivement appliqué est publié sur `:8080` (`av_offset_ms`).
 
 ## Audio
 

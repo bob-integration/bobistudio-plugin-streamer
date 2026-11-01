@@ -1,7 +1,8 @@
 {
-  "version": "0.19.5",
-  "date": "2026-10-30",
+  "version": "0.19.6",
+  "date": "2026-11-01",
   "changes": {
+    "Le calage audio/vidéo devient un vrai réglage (0.19.6)": "★ `av_offset_ms` EST DÉCLARÉ AU MANIFESTE : « Calage audio/vidéo (ms) », de −2000 à +2000, positif retarde l'audio, négatif la vidéo. Le script savait l'appliquer depuis longtemps, mais le réglage n'atteignait jamais le conteneur : la normalisation des paramètres de l'orchestrateur, une liste blanche, le jetait — comme `log_level`, perdu à chaque déploiement. Elle laisse désormais passer toute clé qu'elle ne reconstruit pas (garde tests/verif_streamer_params_traverses.py). Réglable dans la configuration du conteneur et pilotable par les macros ; appliqué au redéploiement.",
     "Mesure mémoire datée au manifeste (0.19.5)": [
       "Ressources : la limite mémoire déclarée porte désormais sa MESURE datée (relevé du 2026-10-30, conteneur et configuration nommés) — garde générique tests/verif_resources_mesurees.py. La limite elle-même ne change pas ; rien à redéployer."
     ],

@@ -33,9 +33,9 @@ on the audio side must not stop the video.
 
 **Audio/video alignment is decided when ffmpeg starts.** Until 2026-10-11 it varied from one
 launch to the next; since then the audio feeder is anchored on the first video frame, and the
-measurement gives pts at 0 ± 20 ms (one frame at 25p) over 8 start-ups. The script can apply a
-constant offset (`av_offset_ms`), but that setting does not reach the container today: the
-orchestrator's parameter normalisation drops it, and no page offers it. Two measurement programs
+measurement gives pts at 0 ± 20 ms (one frame at 25p) over 8 start-ups. A constant offset is set
+with “Audio/video alignment (ms)” (`av_offset_ms`, ±2000 ms, since 0.19.6) in the container's
+configuration; before 0.19.6 the orchestrator's parameter normalisation dropped it. Two measurement programs
 are provided, to observe the alignment rather than estimate it:
 
 ```bash

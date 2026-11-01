@@ -92,6 +92,8 @@
   "plugin.streamer.video": "vidéo",
   "plugin.streamer.video_codec": "Codec vidéo",
   "type.streamer.badge": "Streamer",
+  "type.streamer.cfg.av_offset_ms.help": "Décalage constant entre le son et l'image, en millisecondes. Positif : l'audio est retardé ; négatif : la vidéo est retardée. Sert quand l'image traverse un traitement qui la retarde (mélangeur, correcteur) alors que le son arrive en direct. 0 = aucun décalage. N'agit que sur les sorties qui respectent l'horodatage (UDP, SRT) et sur le WebRTC, où la passerelle transmet le décalage tel quel. Appliqué au redéploiement.",
+  "type.streamer.cfg.av_offset_ms.label": "Calage audio/vidéo (ms)",
   "type.streamer.cfg.log_level.help": "Verbosité du journal du conteneur. Défaut « Événements » : les faits marquants (démarrage/arrêt, changement de format, reconnexion, repli sur un chemin dégradé, entrée qui apparaît ou disparaît) sont TOUJOURS écrits — après une panne le journal doit permettre de reconstituer l'histoire, et élever le niveau après coup ne récupère rien. Les métriques périodiques (fps, compteurs) ne sont PAS journalisées : elles sont déjà publiées sur :8080. « Détaillé » = lance-flammes par trame, à n'activer que le temps d'un diagnostic (le journal Docker n'est pas roté).",
   "type.streamer.cfg.log_level.label": "Niveau de log",
   "type.streamer.cfg.log_level.opt.debug": "Détaillé (par trame — diagnostic ponctuel)",

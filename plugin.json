@@ -8,7 +8,7 @@
     "oklch": "0.77 0.06 50"
   },
   "deploy_order": 2,
-  "version": "0.19.5",
+  "version": "0.19.6",
   "runtime": "docker",
   "adapts_input": true,
   "image": "media",
@@ -233,6 +233,15 @@
       "help": "Suit une source tranchée au grain de tête (bande par bande) pour traiter l'image plus tôt (latence sous-image). Source non tranchée ou mode désactivé (défaut) = comportement historique.",
       "default": false,
       "scope": "system"
+    },
+    {
+      "key": "av_offset_ms",
+      "type": "number",
+      "label": "Calage audio/vidéo (ms)",
+      "help": "Décalage constant entre le son et l'image, en millisecondes. Positif : l'audio est retardé ; négatif : la vidéo est retardée. Sert quand l'image traverse un traitement qui la retarde (mélangeur, correcteur) alors que le son arrive en direct. 0 = aucun décalage. N'agit que sur les sorties qui respectent l'horodatage (UDP, SRT) et sur le WebRTC, où la passerelle transmet le décalage tel quel. Appliqué au redéploiement.",
+      "min": -2000,
+      "max": 2000,
+      "default": 0
     },
     {
       "key": "log_level",

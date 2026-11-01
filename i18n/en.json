@@ -92,6 +92,8 @@
   "plugin.streamer.video": "video",
   "plugin.streamer.video_codec": "Video codec",
   "type.streamer.badge": "Streamer",
+  "type.streamer.cfg.av_offset_ms.help": "Constant offset between sound and picture, in milliseconds. Positive: the audio is delayed; negative: the video is delayed. Use it when the picture goes through a process that delays it (mixer, corrector) while the sound arrives directly. 0 = no offset. Only affects outputs that honour timestamps (UDP, SRT) and WebRTC, where the gateway passes the offset through unchanged. Applied on redeploy.",
+  "type.streamer.cfg.av_offset_ms.label": "Audio/video alignment (ms)",
   "type.streamer.cfg.log_level.help": "Container log verbosity. Default “Events”: notable facts (start/stop, format change, reconnection, fallback to a degraded path, an input appearing or disappearing) are ALWAYS written — after a failure the log must let you reconstruct the story, and raising the level afterwards recovers nothing. Periodic metrics (fps, counters) are NOT logged: they are already published on :8080. “Verbose” = a flamethrower, one line per frame, to be enabled only for the duration of a diagnosis (the Docker log is not rotated).",
   "type.streamer.cfg.log_level.label": "Log level",
   "type.streamer.cfg.log_level.opt.debug": "Verbose (per frame — one-off diagnosis)",
