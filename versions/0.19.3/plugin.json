@@ -1,0 +1,307 @@
+{
+  "license": "GPL-3.0-or-later",
+  "type": "streamer",
+  "label": "Streamer",
+  "badge": {
+    "label": "Streamer",
+    "class": "mode-stream",
+    "oklch": "0.77 0.06 50"
+  },
+  "deploy_order": 2,
+  "version": "0.19.3",
+  "runtime": "docker",
+  "adapts_input": true,
+  "image": "media",
+  "resources": {
+    "cores": 4,
+    "memory": 1024,
+    "pin": false,
+    "gpu_optional": 1
+  },
+  "description": "Encodeur/streamer : encode une entrée vidéo (+ audio 8ch) et diffuse vers plusieurs destinations UDP/SRT/WebRTC (un seul encode, fan-out). Édité sur la page I/O (onglet Streams).",
+  "nav": {
+    "section": "streams",
+    "label": "Streams",
+    "route": "/io",
+    "order": 10
+  },
+  "script_template": "script.py",
+  "ui": {
+    "control_html": "control.html",
+    "control_js": "control.js",
+    "control_css": "control.css"
+  },
+  "deploy_defaults": {
+    "shm_name": "mxl_mix",
+    "audio_shm": null,
+    "hot_input": false,
+    "av_offset_ms": 0,
+    "video": {
+      "codec": "h264",
+      "bitrate": "4M",
+      "preset": "ultrafast",
+      "gop": 25,
+      "width": 0,
+      "height": 0,
+      "fps": 25,
+      "encoder": "cpu",
+      "nvenc_preset": "p1",
+      "nvenc_tune": "ull"
+    },
+    "audio": {
+      "enabled": false,
+      "codec": "aac",
+      "bitrate": "128k",
+      "tracks": []
+    },
+    "destinations": [],
+    "log_level": "info"
+  },
+  "wiring": {
+    "produces": [],
+    "consumes": [
+      {
+        "essence": "video",
+        "state_field": "shm_name",
+        "label": "Vidéo"
+      },
+      {
+        "essence": "audio",
+        "state_field": "audio_shm",
+        "label": "Audio"
+      }
+    ],
+    "mode": "hot-wire",
+    "state_endpoint": "/state"
+  },
+  "control": {
+    "endpoints": [
+      "/input",
+      "/audiomap",
+      "/state",
+      "/log_level"
+    ],
+    "read_endpoints": [
+      "/state"
+    ]
+  },
+  "actions": [
+    {
+      "id": "input",
+      "label": "Re-pointer la source vidéo (mode moniteur)",
+      "endpoint": "/input",
+      "params": [
+        {
+          "key": "shm",
+          "label": "Flux vidéo (shm)",
+          "type": "text",
+          "options_from": "inputs"
+        }
+      ],
+      "feedback": {
+        "state": "shm",
+        "value_from": "shm"
+      }
+    },
+    {
+      "id": "log_level",
+      "label": "Niveau de log (à chaud)",
+      "endpoint": "/log_level",
+      "params": [
+        {
+          "key": "level",
+          "label": "Niveau",
+          "type": "text",
+          "default": "info",
+          "options": [
+            {
+              "value": "debug",
+              "label": "Détaillé"
+            },
+            {
+              "value": "info",
+              "label": "Événements (défaut)"
+            },
+            {
+              "value": "warning",
+              "label": "Anomalies seules"
+            },
+            {
+              "value": "error",
+              "label": "Erreurs seules"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "state": [
+    {
+      "id": "shm",
+      "label": "Source vidéo (shm)",
+      "endpoint": "/",
+      "path": "shm",
+      "type": "text"
+    }
+  ],
+  "config_schema": [
+    {
+      "key": "video.encoder",
+      "type": "select",
+      "label": "Encodeur vidéo",
+      "options": [
+        {
+          "value": "cpu",
+          "label": "Logiciel (x264/x265)"
+        },
+        {
+          "value": "nvenc",
+          "label": "Matériel NVENC — exigé"
+        },
+        {
+          "value": "auto",
+          "label": "Matériel si disponible, logiciel sinon"
+        }
+      ],
+      "default": "cpu",
+      "help": "L'encodage matériel décharge le processeur d'environ un cœur par flux 1080p50 (mesuré) et demande un GPU NVIDIA sur le nœud. « Exigé » refuse de démarrer sans carte utilisable plutôt que de retomber en silence sur le logiciel ; « si disponible » tolère le repli et l'annonce dans l'état du conteneur."
+    },
+    {
+      "key": "video.nvenc_preset",
+      "type": "select",
+      "label": "Preset NVENC",
+      "options": [
+        {
+          "value": "p1",
+          "label": "p1 — latence minimale"
+        },
+        {
+          "value": "p2",
+          "label": "p2 — très rapide"
+        },
+        {
+          "value": "p3",
+          "label": "p3 — rapide"
+        },
+        {
+          "value": "p4",
+          "label": "p4 — équilibré"
+        },
+        {
+          "value": "p5",
+          "label": "p5 — qualité"
+        },
+        {
+          "value": "p6",
+          "label": "p6 — haute qualité"
+        },
+        {
+          "value": "p7",
+          "label": "p7 — qualité maximale"
+        }
+      ],
+      "default": "p1",
+      "help": "Échange latence contre qualité, de p1 (le plus rapide) à p7. Sans effet en encodage logiciel."
+    },
+    {
+      "key": "video.nvenc_tune",
+      "type": "select",
+      "label": "Profil de latence NVENC",
+      "options": [
+        {
+          "value": "ull",
+          "label": "Ultra faible latence (direct)"
+        },
+        {
+          "value": "ll",
+          "label": "Faible latence"
+        },
+        {
+          "value": "hq",
+          "label": "Qualité"
+        }
+      ],
+      "default": "ull",
+      "help": "Équivalent NVENC du « zerolatency » de x264. Sans effet en encodage logiciel."
+    },
+    {
+      "key": "slice_mode",
+      "hidden": true,
+      "type": "checkbox",
+      "label": "Mode tranche (latence sous-image)",
+      "help": "Suit une source tranchée au grain de tête (bande par bande) pour traiter l'image plus tôt (latence sous-image). Source non tranchée ou mode désactivé (défaut) = comportement historique.",
+      "default": false,
+      "scope": "system"
+    },
+    {
+      "key": "log_level",
+      "type": "select",
+      "label": "Niveau de log",
+      "help": "Verbosité du journal du conteneur. Défaut « Événements » : les faits marquants (démarrage/arrêt, changement de format, reconnexion, repli sur un chemin dégradé, entrée qui apparaît ou disparaît) sont TOUJOURS écrits — après une panne le journal doit permettre de reconstituer l'histoire, et élever le niveau après coup ne récupère rien. Les métriques périodiques (fps, compteurs) ne sont PAS journalisées : elles sont déjà publiées sur :8080. « Détaillé » = lance-flammes par trame, à n'activer que le temps d'un diagnostic (le journal Docker n'est pas roté).",
+      "options": [
+        {
+          "value": "debug",
+          "label": "Détaillé (par trame — diagnostic ponctuel)"
+        },
+        {
+          "value": "info",
+          "label": "Événements (défaut)"
+        },
+        {
+          "value": "warning",
+          "label": "Anomalies seules"
+        },
+        {
+          "value": "error",
+          "label": "Erreurs seules"
+        }
+      ],
+      "default": "info",
+      "scope": "user"
+    }
+  ],
+  "param_tree": {
+    "global_groups": [
+      {
+        "label": "Journal (diagnostic)",
+        "endpoint": "/log_level",
+        "fields": {
+          "level": {
+            "label": "Niveau de log",
+            "type": "enum",
+            "options": [
+              "debug",
+              "info",
+              "warning",
+              "error"
+            ],
+            "default": "info",
+            "path": "log_level"
+          }
+        }
+      },
+      {
+        "label": "Encodage matériel (NVENC)",
+        "endpoint": "/state",
+        "readonly": true,
+        "fields": {
+          "encoder": {
+            "label": "Encodeur actif",
+            "type": "enum",
+            "options": [
+              "cpu",
+              "nvenc"
+            ],
+            "path": "encoder",
+            "help": "Encodeur RÉELLEMENT utilisé — diffère de celui demandé quand le mode « si disponible » a dû retomber sur le logiciel."
+          },
+          "nvenc_dispo": {
+            "label": "Pile matérielle utilisable",
+            "type": "bool",
+            "path": "nvenc_dispo"
+          }
+        }
+      }
+    ]
+  }
+}
