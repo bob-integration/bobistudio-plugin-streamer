@@ -1,7 +1,8 @@
 {
-  "version": "0.19.6",
-  "date": "2026-11-01",
+  "version": "0.19.7",
+  "date": "2026-11-08",
   "changes": {
+    "L'éditeur dit qu'une destination WebRTC n'ira nulle part sans passerelle (0.19.7)": "★ L'ÉDITEUR LAISSAIT COCHER « diffuser » SANS RIEN DIRE. Sans passerelle déployée, le hook de déploiement retire `ingest_url` en silence : le conteneur part, ffmpeg encode, les branches UDP/SRT marchent et la branche WebRTC n'existe pas — aucune alerte, aucun compteur, et un chemin WebRTC affiché qui ne mène nulle part. Un message existait, mais seulement DANS le bloc de prévisualisation (replié par défaut sur certains postes) et calculé sur l'état ENREGISTRÉ, donc muet au moment où l'on coche. La note apparaît désormais sous la destination elle-même, dès qu'on choisit « WebRTC », et disparaît seule au tour de poll suivant si la passerelle est déployée depuis un autre onglet. L'état vient du serveur (`gateway_ready` de /api/streams/<vmid>) et reste TRI-ÉTAT : tant qu'on ne sait pas, on n'affirme pas. L'orchestrateur, lui, journalise l'écart au déploiement (`alert.webrtc.destination_sans_passerelle`).",
     "Le calage audio/vidéo devient un vrai réglage (0.19.6)": "★ `av_offset_ms` EST DÉCLARÉ AU MANIFESTE : « Calage audio/vidéo (ms) », de −2000 à +2000, positif retarde l'audio, négatif la vidéo. Le script savait l'appliquer depuis longtemps, mais le réglage n'atteignait jamais le conteneur : la normalisation des paramètres de l'orchestrateur, une liste blanche, le jetait — comme `log_level`, perdu à chaque déploiement. Elle laisse désormais passer toute clé qu'elle ne reconstruit pas (garde tests/verif_streamer_params_traverses.py). Réglable dans la configuration du conteneur et pilotable par les macros ; appliqué au redéploiement.",
     "Mesure mémoire datée au manifeste (0.19.5)": [
       "Ressources : la limite mémoire déclarée porte désormais sa MESURE datée (relevé du 2026-10-30, conteneur et configuration nommés) — garde générique tests/verif_resources_mesurees.py. La limite elle-même ne change pas ; rien à redéployer."

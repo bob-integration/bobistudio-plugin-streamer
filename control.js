@@ -10,7 +10,11 @@
 // GET /api/streams/<vmid> ; sauvegarde POST /api/streams/<vmid> ; polling 5 s.
 window.MXLPlugins = window.MXLPlugins || {};
 window.MXLPlugins.streamer = (function () {
-    let EL = null, VMID = null, TOAST = () => {}, pollTimer = null, firstRender = true, lastC = null, _hostname = '';
+    let EL = null, VMID = null, TOAST = () => {}, pollTimer = null, firstRender = true, lastC = null, _hostname = ''
+    // null = pas encore su (l'état vient du serveur) ; false = passerelle absente.
+    // Tri-état VOLONTAIRE : afficher « pas de passerelle » avant la première réponse
+    // ferait clignoter un avertissement faux au montage.
+    let _gwReady = null;
     const T = (k) => (window.t ? window.t(k) : k);   // i18n (catalogue plugin.streamer.*)
 
     const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -72,6 +76,22 @@ window.MXLPlugins.streamer = (function () {
         for (let i = 2; i < 20; i++) { const c = `${base}-${i}`; if (!used.has(c)) return c; }
         return base;
     }
+    // ─── Passerelle WebRTC absente : le dire LÀ OÙ L'ON COCHE ───
+    function gwNoteHtml(){
+        return `<div class="preview-note" data-gw-note>${esc(T('plugin.streamer.dest_no_gw'))}</div>`; }
+    function refreshGwNotes(){
+        if(!EL) return;
+        EL.querySelectorAll('[data-dest]').forEach(row => {
+            const sel = row.querySelector('[data-f=type]');
+            const champs = row.querySelector('.dest-fields');
+            if(!sel || !champs) return;
+            const note = champs.querySelector('[data-gw-note]');
+            if(sel.value === 'webrtc' && _gwReady === false){
+                if(!note) champs.insertAdjacentHTML('beforeend', gwNoteHtml());
+            } else if(note){ note.remove(); }
+        });
+    }
+
     function onDestType(sel){
         const destDiv = sel.closest('[data-dest]');
         destDiv.querySelector('.dest-fields').innerHTML = destFields({type: sel.value});
@@ -79,6 +99,7 @@ window.MXLPlugins.streamer = (function () {
             const pathInput = destDiv.querySelector('[data-f="path"]');
             if (pathInput && !pathInput.value.trim()) pathInput.value = _autoWebrtcPath();
         }
+        refreshGwNotes();
     }
     function readDest(row){
         const t = row.querySelector('[data-f=type]').value;
@@ -90,7 +111,7 @@ window.MXLPlugins.streamer = (function () {
         if(t=='webrtc') return {type:'webrtc', path:(get('path')||'').trim(), enabled:!!get('enabled')};
         return {type:t};
     }
-    function addDest(){ EL.querySelector('[data-dests]').insertAdjacentHTML('beforeend', destRow({type:'udp'})); }
+    function addDest(){ EL.querySelector('[data-dests]').insertAdjacentHTML('beforeend', destRow({type:'udp'})); refreshGwNotes(); }
 
     // ─── Pistes audio (mapping canaux 8→sortie) ───
     function chSel(val){ let o=''; for(let i=0;i<8;i++) o+=`<option value="${i}" ${i==val?'selected':''}>${i+1}</option>`; return `<select data-ach>${o}</select>`; }
@@ -423,12 +444,19 @@ window.MXLPlugins.streamer = (function () {
         try { const r=await fetch('/api/streams/'+VMID); if(!r.ok) throw new Error('HTTP '+r.status); c=await r.json(); }
         catch(e){ if(firstRender && EL) EL.innerHTML='<div class="meta">'+esc(T('plugin.streamer.unavailable'))+'</div>'; return; }
         lastC=c;
+        // `undefined` sur un orchestrateur plus ancien que ce champ : on reste en « pas su »
+        // plutôt que d'affirmer une absence de passerelle.
+        _gwReady = (c.gateway_ready === undefined) ? null : !!c.gateway_ready;
         if(firstRender){
             renderInner(c); firstRender=false;
             setupFormatSelect(c);
             if(hasWebrtc(c)) loadShareLinks();
+            refreshGwNotes();
         } else {
             liveUpdate(c);
+            // La passerelle peut être déployée depuis un autre onglet : le poll de 5 s suffit
+            // à faire disparaître la note, sans recharger l'éditeur (on ne touche qu'aux notes).
+            refreshGwNotes();
         }
     }
 
