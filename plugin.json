@@ -8,7 +8,8 @@
     "oklch": "0.77 0.06 50"
   },
   "deploy_order": 2,
-  "version": "0.19.8",
+  "version": "0.19.9",
+  "requires": {"core_min": "0.9.14"},
   "runtime": "docker",
   "adapts_input": true,
   "image": "media",
