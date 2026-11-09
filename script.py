@@ -323,7 +323,9 @@ VCODEC = (_VC_NVENC if ENCODER == "nvenc" else _VC_LOGICIEL).get(
 A_SAMPLE_RATE = 48000
 A_CHANNELS    = 8
 A_BYTES_PER_SAMPLE = 4   # float32 (was 3 = s24be)
-A_BLOCK       = A_SAMPLE_RATE // 1000   # 48 samples = 1 ms (granularité de lecture gapless)
+# Audio packet size on the bus: core setting (Réglages → MXL). An older orchestrator has no helper: 1 ms.
+A_BLOCK       = bobimxl.audio_grain(CONFIG, A_SAMPLE_RATE) if hasattr(bobimxl, "audio_grain") else 48
+A_BLOCK_MS    = A_BLOCK * 1000 // A_SAMPLE_RATE if (A_BLOCK * 1000) % A_SAMPLE_RATE == 0 else A_BLOCK * 1000.0 / A_SAMPLE_RATE   # duration of one read block, ms
 AUDIO_FIFO    = "/tmp/wudp_audio.raw"
 AUDIO_ENABLED = bool(AUDIO_CFG.get("enabled")) and bool(AUDIO_SHM)
 
@@ -370,7 +372,7 @@ def _flatten_channels(tracks):
 _INIT_TRACKS = AUDIO_CFG.get("tracks") or [{{"channels": [0, 1]}}]
 AUDIO_WIDTHS = _track_widths(_INIT_TRACKS)
 OUT_CHANNELS = sum(AUDIO_WIDTHS) or A_CHANNELS          # canaux écrits dans le fifo (≠ 8)
-A_OUT_CHUNK  = (A_SAMPLE_RATE // 1000) * OUT_CHANNELS * A_BYTES_PER_SAMPLE
+A_OUT_CHUNK  = A_BLOCK * OUT_CHANNELS * A_BYTES_PER_SAMPLE
 
 _amap_lock = threading.Lock()
 _amap = {{"slot_src": _flatten_channels(_INIT_TRACKS)}}  # slot_src[k] = canal source du slot k
@@ -1012,7 +1014,7 @@ class _StdinTemoin:
 # ATTENDU tant qu'il a moins de A_LATE ; au-delà (source absente, muette par coupure, figée), il est
 # remplacé par du silence À SA POSITION — ffmpeg n'est jamais affamé, la vidéo ne bloque jamais, et
 # la ligne de temps audio ne glisse pas d'un échantillon.
-SILENCE = bytes(A_OUT_CHUNK)   # 1 ms de silence à la largeur de SORTIE (OUT_CHANNELS)
+SILENCE = bytes(A_OUT_CHUNK)   # one block of silence à la largeur de SORTIE (OUT_CHANNELS)
 
 # Témoin du feeder, publié sur :8080 (`audio_feed`). Sans lui, un flux 100 % silence et un flux
 # sain affichaient les MÊMES compteurs (av_ecrit_audio_ms avance dans les deux cas) : la panne
@@ -1071,7 +1073,7 @@ def audio_feeder():
             if _av["gen"] != gen:
                 continue
             anchor = _av["anchor_ns"] if _av["anchor_ns"] is not None else bobimxl.now_tai()
-            pos = _tai_samples(anchor) - _webrtc_comp_ms(_has_ts(), _has_webrtc(), _gateway_abs_ts()) * (A_SAMPLE_RATE // 1000)
+            pos = _tai_samples(anchor) - _webrtc_comp_ms(_has_ts(), _has_webrtc(), _gateway_abs_ts()) * (A_SAMPLE_RATE // 1000)   # per-ms, not the bus grain
             skip_seen = _av["skip_ns"]
             off_st = {{"off": 0, "cand": None}}   # décalage source/grille ADOPTÉ (cf. _src_offset_update)
             head_prev = None; head_t = 0.0; bad_reads = 0; reopen_n = 0
@@ -1130,13 +1132,13 @@ def audio_feeder():
                         break
                     r = ar.read_from(pos, A_BLOCK) if (act == "read" and ar is not None) else None
                     if r is not None:
-                        _fifo_write(fd, _remap(r, idx)); real += 1; _afeed["real_ms"] += 1
+                        _fifo_write(fd, _remap(r, idx)); real += 1; _afeed["real_ms"] += A_BLOCK_MS
                         bad_reads = 0; reopen_n = 0
                     else:
                         # "read" sans données = bloc sorti de l'anneau (encodeur en retard) ; sinon
                         # source absente. Dans les deux cas : silence À CETTE position.
                         _fifo_write(fd, SILENCE)
-                        _afeed["gap_ms" if act == "read" else "silence_ms"] += 1
+                        _afeed["gap_ms" if act == "read" else "silence_ms"] += A_BLOCK_MS
                         if act == "read" and head - pos < A_SAMPLE_RATE // 10:
                             bad_reads += 1     # bloc RÉCENT illisible : le lecteur, pas l'anneau
                     _origine_note("audio")
