@@ -171,8 +171,12 @@ def _out_pix_fmt(out_chroma, vcodec, webrtc):
 _ICW, _ICH  = _CHROMA_DIV[IN_CHROMA]         # diviseurs chroma de l'ENTRÉE
 _IN_BPP     = (1.0 + 2.0 / (_ICW * _ICH)) * _IN_DBPS   # octets/pixel d'entrée (incl. profondeur)
 FRAME_SIZE = int(WIDTH * HEIGHT * _IN_BPP)    # TRAME pleine (ce qu'on pousse à ffmpeg)
-GRAIN_H    = HEIGHT                            # hauteur d'un GRAIN (= ½ trame si entrelacé)
-GRAIN_SIZE = FRAME_SIZE                        # taille d'un GRAIN (= ½ trame si entrelacé)
+# ⚠ Interlaced from the start counts too (2026-11-15): GRAIN_SIZE was FRAME_SIZE here and only
+# _recalc_sizes() halved it — called when the scan CHANGES. A monitor deployed straight onto an
+# interlaced source (CONFIG scan "i") never saw a change, expected 1920×1080 grains, rejected
+# every 1920×540 field: in_fps_seen 0, black pushed at 25 fps, nothing in the log.
+GRAIN_H    = (HEIGHT // 2) if IN_INTERLACED else HEIGHT   # hauteur d'un GRAIN (½ trame si entrelacé)
+GRAIN_SIZE = int(WIDTH * GRAIN_H * _IN_BPP)               # taille d'un GRAIN
 
 def _recalc_sizes():
     """Recalcule tous les dérivés de (WIDTH, HEIGHT, IN_CHROMA, BIT_DEPTH, IN_INTERLACED).
@@ -1428,6 +1432,7 @@ def _run_hot():
     ffmpeg_out = creer_ffmpeg()
     cur_name = None; r = None
     last_index = 0; last_frame = None
+    _hot_warned = set()       # sources whose unreadable grains were already logged
     win_cnt = 0; win_start = time.time()   # fps sur fenêtre glissante (~1s), pas cumulé
     # Diagnostics fenêtre glissante (miroir de la boucle normale) : production vue côté SOURCE
     # (delta d'index → in_fps_seen, détecte une source figée) et frames réellement poussées
@@ -1466,6 +1471,10 @@ def _run_hot():
                 # Garde monitor : ne JAMAIS pousser un grain de taille ≠ GRAIN_SIZE (canvas, ou
                 # ½ canvas si la source est ENTRELACÉE : 1 grain = 1 champ) — un re-point (hot)
                 # vers une autre résolution sans redéploiement corromprait le flux.
+                if got is not None and len(got[2]) != GRAIN_SIZE and cur_name not in _hot_warned:
+                    _hot_warned.add(cur_name)
+                    log(f"hot-input : grains de {{cur_name!r}} ignorés — {{len(got[2])}} octets pour "
+                        f"{{GRAIN_SIZE}} attendus", "warning")
                 if got is not None and len(got[2]) == GRAIN_SIZE:
                     fi = got[0]
                     if fi != last_index:
@@ -1487,7 +1496,12 @@ def _run_hot():
                             last_tai = _grain_tai(r, fi)
                         age_us = (bobimxl.now_tai() - r.last_write_time()) // 1000
                         if 0 <= age_us < 5_000_000: lat_in.push(age_us / 1000.0)
-            except Exception:
+            except Exception as e:
+                # Said once per source: a read that fails on every grain used to leave the monitor
+                # black with an empty log.
+                if cur_name not in _hot_warned:
+                    _hot_warned.add(cur_name)
+                    log(f"hot-input : lecture de {{cur_name!r}} impossible : {{e!r}}", "warning")
                 try:
                     if r: r.close()
                 except Exception: pass

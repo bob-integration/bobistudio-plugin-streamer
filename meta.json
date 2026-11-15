@@ -1,7 +1,11 @@
 {
-  "version": "0.19.9",
-  "date": "2026-11-09",
+  "version": "0.19.10",
+  "date": "2026-11-15",
   "changes": {
+    "Moniteur sur une source entrelacée : plus d'écran noir (0.19.10)": [
+      "Un moniteur déployé directement sur une source entrelacée attendait des grains de la taille d'une trame entière : la taille d'un champ n'était recalculée que si le balayage CHANGEAIT en cours de route. Chaque champ était rejeté, `in_fps_seen` restait à 0 et l'encodeur poussait du noir à 25 i/s, sans rien au journal. Constaté sur une capture DeckLink 1080i50 ; une source progressive, ou un moniteur passé d'une source progressive à une entrelacée, n'étaient pas touchés.",
+      "La taille est maintenant juste dès le démarrage. Un grain ignoré pour sa taille, ou une lecture qui échoue, est journalisé une fois par source au lieu d'être avalé en silence. À redéployer (le moniteur se redéploie seul au prochain changement de source)."
+    ],
     "Version minimale du cœur déclarée (0.19.9)": [
       "Le manifeste déclare `requires.core_min` = 0.9.14 : l'orchestrateur refuse de l'installer sur un cœur plus ancien et le dit. Valeur = le cœur avec lequel la version précédente a été faite. Rien ne change dans le conteneur : rien à redéployer."
     ],
