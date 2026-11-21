@@ -1,7 +1,12 @@
 {
-  "version": "0.19.10",
-  "date": "2026-11-15",
+  "version": "0.19.11",
+  "date": "2026-11-21",
   "changes": {
+    "Moniteur plafonné à 960×540, un seul champ sur une source entrelacée (0.19.11)": [
+      "Sur une source 1080i50, le moniteur tissait les deux champs, les désentrelaçait puis encodait en 1920×1080 : 103 % de ses 40 ms. Il encode maintenant au plus 960×540, proportions gardées, et sur une source entrelacée il prend le premier champ de chaque trame, sans tissage ni désentrelacement. À cette taille, rien n'est perdu.",
+      "Réglages `video.max_width`/`video.max_height` (0 = sans plafond) et `video.field_only` (moniteur seulement). La page Streams n'en pose aucun : ses encodages ne changent pas. `:8080` publie la taille réellement encodée et `field_only`.",
+      "L'image noire de repli avait la taille d'une trame 8 bits, quelle que soit la source : sur une source 10 bits, c'était une demi-image, et ffmpeg restait décalé jusqu'à sa relance."
+    ],
     "Moniteur sur une source entrelacée : plus d'écran noir (0.19.10)": [
       "Un moniteur déployé directement sur une source entrelacée attendait des grains de la taille d'une trame entière : la taille d'un champ n'était recalculée que si le balayage CHANGEAIT en cours de route. Chaque champ était rejeté, `in_fps_seen` restait à 0 et l'encodeur poussait du noir à 25 i/s, sans rien au journal. Constaté sur une capture DeckLink 1080i50 ; une source progressive, ou un moniteur passé d'une source progressive à une entrelacée, n'étaient pas touchés.",
       "La taille est maintenant juste dès le démarrage. Un grain ignoré pour sa taille, ou une lecture qui échoue, est journalisé une fois par source au lieu d'être avalé en silence. À redéployer (le moniteur se redéploie seul au prochain changement de source)."

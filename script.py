@@ -146,7 +146,7 @@ IN_INTERLACED    = (IN_SCAN == "i")
 def _deint_vf():
     """Filtre de désentrelacement courant (recalculé à chaque création de ffmpeg : le balayage
     n'est connu qu'APRÈS détection du flow_def / re-câblage à chaud)."""
-    if not IN_INTERLACED:
+    if not IN_INTERLACED or _field_only():
         return ""
     return "bwdif=mode=send_frame:parity=" + ("1" if IN_FIELD_ORDER == "bff" else "0")
 
@@ -192,6 +192,45 @@ def _recalc_sizes():
     FRAME_SIZE  = int(WIDTH * HEIGHT * _IN_BPP)
     GRAIN_H     = (HEIGHT // 2) if IN_INTERLACED else HEIGHT
     GRAIN_SIZE  = int(WIDTH * GRAIN_H * _IN_BPP)
+
+# ── Preview cap (2026-11-21) ─────────────────────────────────────────────────────────────────
+# The monitor took 103 % of its 40 ms on a 1080i50 source: weave two fields, bwdif, x264 at
+# 1920×1080. A preview does not need that. `max_width`/`max_height` (0 = none) cap the ENCODED
+# size, aspect kept; `field_only` (monitor only) encodes the first field of each frame instead
+# of weaving and deinterlacing: no bwdif, a quarter of the pixels once scaled to 960×540, and
+# nothing lost at that size. The Streams page sets neither: its encodes are unchanged.
+MAX_W = int(VIDEO_CFG.get("max_width") or 0)
+MAX_H = int(VIDEO_CFG.get("max_height") or 0)
+FIELD_ONLY = HOT_INPUT and _as_bool(VIDEO_CFG.get("field_only", False))
+
+
+def _field_only():
+    return FIELD_ONLY and IN_INTERLACED
+
+
+def _push_dims():
+    """Size of the picture written to ffmpeg's stdin: one field when field_only, else a frame."""
+    return WIDTH, (GRAIN_H if _field_only() else HEIGHT)
+
+
+def _out_dims():
+    """Encoded size: the configured output (or the input frame), fitted into the cap."""
+    w, h = (OUT_WIDTH, OUT_HEIGHT) if (OUT_WIDTH and OUT_HEIGHT) else (WIDTH, HEIGHT)
+    if MAX_W and MAX_H and w and h and (w > MAX_W or h > MAX_H):
+        k = min(MAX_W / w, MAX_H / h)
+        w, h = max(2, int(w * k) // 2 * 2), max(2, int(h * k) // 2 * 2)
+    return w, h
+
+
+def _black_picture():
+    """Black at the pushed size and bit depth. It was 8-bit frame-sized whatever the source: on a
+    10-bit source it was half a picture, and ffmpeg's rawvideo reader stayed misaligned."""
+    w, h = _push_dims()
+    ny, nc = w * h, (w // _ICW) * (h // _ICH) * 2
+    if _IN_DEEP:
+        return b"\x40\x00" * ny + b"\x00\x02" * nc
+    return b"\x10" * ny + b"\x80" * nc
+
 
 def _field_planes():
     """Plans d'un grain-CHAMP : [(taille_octets, octets_par_ligne)] pour Y, U, V."""
@@ -639,8 +678,9 @@ def _video_filter():
     _dv = _deint_vf()
     if _dv:
         parts.append(_dv)                # désentrelacement AVANT scale (sinon peigne ré-échantillonné)
-    if OUT_WIDTH and OUT_HEIGHT and (OUT_WIDTH != WIDTH or OUT_HEIGHT != HEIGHT):
-        parts.append(f"scale={{OUT_WIDTH}}:{{OUT_HEIGHT}}:flags=bicubic")
+    _ow, _oh = _out_dims()
+    if _ow and _oh and (_ow, _oh) != _push_dims():
+        parts.append(f"scale={{_ow}}:{{_oh}}:flags=bicubic")
     if (not HOT_INPUT) and OUT_FPS and OUT_FPS != IN_FPS:
         parts.append(f"fps={{OUT_FPS}}")
     return ",".join(parts)
@@ -744,7 +784,7 @@ def creer_ffmpeg():
     # configuration du filtre [1:a]).
     vin = ["-thread_queue_size", "512",
            "-f", "rawvideo", "-pix_fmt", IN_PIX_FMT,
-           "-s", f"{{WIDTH}}x{{HEIGHT}}", "-r", str(in_rate)]
+           "-s", "%dx%d" % _push_dims(), "-r", str(in_rate)]
     if av < 0:                                            # vidéo en avance → la retarder
         vin += ["-itsoffset", f"{{-av / 1e9:.3f}}"]
     vin += ["-i", "pipe:0"]
@@ -753,6 +793,8 @@ def creer_ffmpeg():
     vchain = _video_filter()
     _opix = _out_pix_fmt(OUT_CHROMA, VCODEC, _has_webrtc())
     metrics["out_pix_fmt"] = _opix
+    metrics["out_width"], metrics["out_height"] = _out_dims()   # what is really encoded
+    metrics["field_only"] = _field_only()
     if ENCODER == "nvenc":
         # ⚠ Les options de x264 ne sont PAS celles de NVENC : `-preset` prend p1…p7 (et non
         # `ultrafast`), `-tune zerolatency` n'existe pas (c'est `ll`/`ull`), et le débit constant
@@ -1428,7 +1470,6 @@ def _hot_restart(proc):
 
 def _run_hot():
     global ffmpeg_out
-    black = b"\x10" * (WIDTH * HEIGHT) + b"\x80" * ((WIDTH // _ICW) * (HEIGHT // _ICH) * 2)
     ffmpeg_out = creer_ffmpeg()
     cur_name = None; r = None
     last_index = 0; last_frame = None
@@ -1485,7 +1526,12 @@ def _run_hot():
                             ff = (fi - 1) // 2
                             g0 = r.get(2 * ff) if ff >= 0 else None
                             g1 = r.get(2 * ff + 1) if ff >= 0 else None
-                            if (g0 is not None and g1 is not None
+                            if _field_only():
+                                if g0 is not None and len(g0[2]) == GRAIN_SIZE:
+                                    last_frame = bytes(g0[2])
+                                    last_index = 2 * ff + 1
+                                    last_tai = _grain_tai(r, 2 * ff)
+                            elif (g0 is not None and g1 is not None
                                     and len(g0[2]) == GRAIN_SIZE and len(g1[2]) == GRAIN_SIZE):
                                 last_frame = _weave_fields(bytes(g0[2]), bytes(g1[2]))
                                 last_index = 2 * ff + 1
@@ -1521,7 +1567,7 @@ def _run_hot():
                 _av["skip_ns"] += int(skip * 1_000_000_000 // FPS)
                 log(f"hot-input : encodeur en retard de {{skip}} trames — créneaux sautés "
                     f"(l'audio saute la même durée, le calage est conservé)", "warning")
-            buf = last_frame if last_frame is not None else black
+            buf = last_frame if last_frame is not None else _black_picture()
             _av["hint_ns"] = last_tai if last_frame is not None else None
             try:
                 # Rattrapage : la MÊME image répétée, pour que la trame k reste à v_t0 + k/FPS.
